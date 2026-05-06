@@ -1,0 +1,69 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Program Files/Google/Chrome/Application/**)",
+      "Read(//c/Program Files \\(x86\\)/Google/Chrome/Application/**)",
+      "Bash('/c/Program Files/Google/Chrome/Application/chrome.exe' '--pack-extension=C:/Users/danielm/Desktop/Claude Code/oc-pilot' '--pack-extension-key=C:/Users/danielm/Desktop/Claude Code/oc-pilot.pem' --no-message-box)",
+      "Read(//c/Users/danielm/Desktop/Claude Code/**)",
+      "Bash('/c/Program Files/Google/Chrome/Application/chrome.exe' '--pack-extension=C:/Users/danielm/Desktop/Claude Code/oc-pilot' --no-message-box)",
+      "Bash(\"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\" --pack-extension=\"$\\(pwd\\)/oc-pilot\" --pack-extension-key=\"$\\(pwd\\)/oc-pilot.pem\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(mkdir -p \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\build\")",
+      "Bash(mv \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot\\\\build\\\\oc-pilot-0.13.0.crx\" \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\build\\\\oc-pilot-0.13.0.crx\")",
+      "Bash(\"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\" --pack-extension=\"$\\(pwd\\)/oc-pilot/src\" --pack-extension-key=\"$\\(pwd\\)/oc-pilot.pem\")",
+      "Bash(\"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\" --pack-extension=\"$\\(pwd\\)/src\" --pack-extension-key=\"C:/Users/danielm/Desktop/Claude Code/oc-pilot.pem\")",
+      "PowerShell(& \"$PWD\\\\make-icons.ps1\")",
+      "Bash(\"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\" --pack-extension=\"C:/Users/danielm/Desktop/Claude Code/oc-pilot/src\" --pack-extension-key=\"C:/Users/danielm/Desktop/Claude Code/oc-pilot/oc-pilot.pem\")",
+      "Bash(\"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\" --pack-extension=\"C:/Users/danielm/Desktop/Claude Code/oc-pilot/src\" --pack-extension-key=\"C:/Users/danielm/Desktop/Claude Code/oc-pilot.pem\")",
+      "PowerShell(node --version 2>$null)",
+      "PowerShell(npm --version 2>$null)",
+      "PowerShell(python --version 2>$null)",
+      "PowerShell(python3 --version 2>$null)",
+      "PowerShell(Get-VMHost)",
+      "PowerShell(Get-VMSwitch)",
+      "PowerShell(crc config view)",
+      "PowerShell(Get-Command crc)",
+      "mcp__Claude_in_Chrome__computer",
+      "mcp__Claude_in_Chrome__javascript_tool",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "mcp__Claude_in_Chrome__list_connected_browsers",
+      "mcp__Claude_in_Chrome__select_browser",
+      "mcp__Claude_in_Chrome__browser_batch",
+      "mcp__Claude_in_Chrome__navigate",
+      "mcp__Claude_in_Chrome__tabs_create_mcp",
+      "mcp__Claude_in_Chrome__read_network_requests",
+      "PowerShell(Get-Process node -ErrorAction SilentlyContinue | Select-Object Id, CPU; node \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot\\\\test\\\\server.js\" &)",
+      "PowerShell($proc = Start-Process -FilePath \"node\" -ArgumentList \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot\\\\test\\\\server.js\" -PassThru -NoNewWindow -RedirectStandardOutput \"$env:TEMP\\\\server-out.txt\" -RedirectStandardError \"$env:TEMP\\\\server-err.txt\"; Start-Sleep -Seconds 3; Get-Content \"$env:TEMP\\\\server-out.txt\"; Get-Content \"$env:TEMP\\\\server-err.txt\"; Invoke-WebRequest -Uri \"http://localhost:8787/\" -UseBasicParsing | Select-Object StatusCode)",
+      "PowerShell($serverPath = \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot\\\\test\\\\server.js\"; $proc = Start-Process -FilePath \"node\" -ArgumentList \"`\"$serverPath`\"\" -PassThru -NoNewWindow -RedirectStandardOutput \"$env:TEMP\\\\server-out.txt\" -RedirectStandardError \"$env:TEMP\\\\server-err.txt\"; Start-Sleep -Seconds 3; Get-Content \"$env:TEMP\\\\server-out.txt\"; Get-Content \"$env:TEMP\\\\server-err.txt\"; try { \\(Invoke-WebRequest -Uri \"http://localhost:8787/\" -UseBasicParsing\\).StatusCode } catch { \"Failed: $_\" })",
+      "mcp__Claude_in_Chrome__read_console_messages",
+      "mcp__Claude_in_Chrome__find",
+      "mcp__Claude_in_Chrome__tabs_close_mcp",
+      "Bash(powershell -ExecutionPolicy Bypass -NoProfile -Command ' *)",
+      "PowerShell(schtasks /Delete /TN \"CRC Auto-Start\" /F 2>$null; schtasks /Create /TN \"CRC Auto-Start\" /TR '\"C:\\\\Program Files\\\\Red Hat OpenShift Local\\\\crc.exe\" start' /SC ONLOGON /DELAY 0001:00 /F)",
+      "Bash(powershell -NoProfile -Command ' *)",
+      "Bash(npm install *)",
+      "Bash(npx playwright *)",
+      "Bash(git -C 'C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot' status --short)",
+      "Bash(git -C 'C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot' log --oneline -10)",
+      "Bash(git -C \"/c/Users/danielm/Desktop/Claude Code/oc-pilot\" status --short)",
+      "Bash(git -C \"/c/Users/danielm/Desktop/Claude Code/oc-pilot\" log --oneline -10)",
+      "PowerShell($root = 'C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot'; \"=== src/ ===\"; Get-ChildItem \"$root\\\\src\" -File | Select-Object Name, Length, @{N='Modified';E={$_.LastWriteTime.ToString\\('yyyy-MM-dd HH:mm'\\)}} | Format-Table -AutoSize | Out-String; \"=== dist/ ===\"; Get-ChildItem \"$root\\\\dist\" -File | Select-Object Name, Length, @{N='Modified';E={$_.LastWriteTime.ToString\\('yyyy-MM-dd HH:mm'\\)}} | Format-Table -AutoSize | Out-String; \"=== src vs dist file lists ===\"; $srcFiles = \\(Get-ChildItem \"$root\\\\src\" -File\\).Name | Sort-Object; $distFiles = \\(Get-ChildItem \"$root\\\\dist\" -File\\).Name | Sort-Object; \"in src not in dist:\"; \\(Compare-Object $srcFiles $distFiles | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject\\) -join ', '; \"in dist not in src:\"; \\(Compare-Object $srcFiles $distFiles | Where-Object SideIndicator -eq '=>' | ForEach-Object InputObject\\) -join ', ')",
+      "Bash(npm test *)",
+      "Bash(.\\\\pack.ps1)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "try { $raw = [Console]::In.ReadToEnd(); $d = $raw | ConvertFrom-Json; if ($d.tool_input.command -notmatch 'chrome.*pack-extension') { exit 0 }; $crx = 'C:/Users/danielm/Desktop/Claude Code/oc-pilot/src.crx'; if (-not (Test-Path $crx)) { exit 0 }; $m = Get-Content 'C:/Users/danielm/Desktop/Claude Code/oc-pilot/src/manifest.json' | ConvertFrom-Json; $v = $m.version; $b = 'C:/Users/danielm/Desktop/Claude Code/oc-pilot/build'; New-Item -ItemType Directory -Force -Path $b | Out-Null; Move-Item -Force $crx ($b + '/oc-pilot-' + $v + '.crx') } catch { }",
+            "shell": "powershell"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>OC Pilot — Mock Console</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: #1b1d21; color: #e5e7eb;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px; }
+
+    /* ── Test controls panel ─────────────────────────────────────────── */
+    #test-panel {
+      position: fixed; top: 0; right: 0; width: 260px; height: 100vh;
+      background: #111318; border-left: 1px solid #2d2f36; overflow-y: auto;
+      padding: 12px; z-index: 9999; font-size: 12px;
+    }
+    #test-panel h3 { margin: 0 0 10px; font-size: 13px; color: #f59e0b; }
+    #test-panel h4 { margin: 14px 0 6px; font-size: 11px; color: #9ca3af;
+      text-transform: uppercase; letter-spacing: .06em; }
+    #test-panel button {
+      display: block; width: 100%; margin-bottom: 5px; padding: 6px 10px;
+      background: #1e2130; border: 1px solid #3d4156; border-radius: 5px;
+      color: #e5e7eb; cursor: pointer; text-align: left; font-size: 12px;
+    }
+    #test-panel button:hover { background: #272b3f; border-color: #555; }
+    #test-panel button.danger { border-color: #7f1d1d; color: #fca5a5; }
+    #test-panel button.danger:hover { background: #3b1010; }
+    #test-panel .log {
+      margin-top: 10px; padding: 8px; background: #0f1117; border-radius: 4px;
+      font-family: monospace; font-size: 11px; color: #6b7280; min-height: 60px;
+      max-height: 200px; overflow-y: auto;
+    }
+    #test-panel .log .ok  { color: #4ade80; }
+    #test-panel .log .err { color: #f87171; }
+    #test-panel .log .info { color: #60a5fa; }
+
+    /* ── Page layout ─────────────────────────────────────────────────── */
+    #page-root { margin-right: 268px; padding: 0; }
+
+    /* Mock masthead */
+    .mock-masthead {
+      background: #0f1117; border-bottom: 1px solid #2d2f36;
+      padding: 0 24px; display: flex; align-items: center; height: 48px;
+      gap: 16px; position: sticky; top: 0; z-index: 100;
+    }
+    .mock-masthead .logo { font-weight: 700; color: #ee0000; font-size: 16px; }
+    .mock-masthead .spacer { flex: 1; }
+
+    /* Mock breadcrumb + title area */
+    .mock-page-header {
+      padding: 16px 24px 8px;
+      border-bottom: 1px solid #2d2f36;
+    }
+    .mock-page-header h1 { margin: 0; font-size: 22px; font-weight: 400; }
+
+    /* Filter bar */
+    .mock-filter-bar {
+      padding: 12px 24px; display: flex; align-items: center; gap: 10px;
+    }
+    .mock-filter-bar input {
+      background: #1e2130; border: 1px solid #3d4156; border-radius: 4px;
+      color: #e5e7eb; padding: 6px 10px; font-size: 13px; width: 260px;
+    }
+    .mock-filter-bar input:focus { outline: none; border-color: #60a5fa; }
+
+    /* Table area — mimics OCP's co-virtualized-table wrapper */
+    .mock-table-area { padding: 0 24px 32px; }
+
+    /* PatternFly v5 table (minimal mock) */
+    .pf-v5-c-table {
+      width: 100%; border-collapse: collapse;
+      background: transparent;
+    }
+    .pf-v5-c-table thead tr { border-bottom: 2px solid #3d4156; }
+    .pf-v5-c-table thead th {
+      padding: 8px 16px; text-align: left; font-weight: 600;
+      font-size: 12px; color: #9ca3af; white-space: nowrap;
+    }
+    .pf-v5-c-table tbody tr {
+      border-bottom: 1px solid #2d2f36; transition: background .1s;
+    }
+    .pf-v5-c-table tbody tr:hover { background: rgba(255,255,255,.03); }
+    .pf-v5-c-table td {
+      padding: 10px 16px; vertical-align: middle; position: relative;
+    }
+    .pf-v5-c-table td a { color: #60a5fa; text-decoration: none; }
+    .pf-v5-c-table td a:hover { text-decoration: underline; }
+
+    /* NS badge mock */
+    .ns-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: #1e2130; border: 1px solid #3d4156; border-radius: 4px;
+      padding: 2px 6px; font-size: 11px; font-weight: 600; color: #60a5fa;
+    }
+
+    /* Status pill */
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 12px; color: #4ade80;
+    }
+    .status-pill::before {
+      content: ''; width: 7px; height: 7px; border-radius: 50%;
+      background: #4ade80; flex-shrink: 0;
+    }
+
+    /* Virtualized rows hidden by default (simulate RV window) */
+    .virt-hidden { display: none; }
+  </style>
+</head>
+<body>
+
+<!-- ── Chrome extension API mock ─────────────────────────────────────── -->
+<script>
+(function () {
+  'use strict';
+
+  // Listeners registered via chrome.storage.onChanged.addListener
+  const _storageListeners = [];
+
+  window.chrome = {
+    storage: {
+      local: {
+        get(keys, cb) {
+          const result = {};
+          const ks = typeof keys === 'string' ? [keys] : (Array.isArray(keys) ? keys : Object.keys(keys));
+          ks.forEach(k => {
+            try { const raw = localStorage.getItem('oc_pilot_' + k);
+              result[k] = raw !== null ? JSON.parse(raw) : undefined;
+            } catch { result[k] = undefined; }
+          });
+          setTimeout(() => cb && cb(result), 0);
+        },
+        set(obj, cb) {
+          const changes = {};
+          Object.entries(obj).forEach(([k, v]) => {
+            let oldValue;
+            try { oldValue = JSON.parse(localStorage.getItem('oc_pilot_' + k)); } catch { oldValue = undefined; }
+            localStorage.setItem('oc_pilot_' + k, JSON.stringify(v));
+            changes[k] = { oldValue, newValue: v };
+          });
+          // Fire onChanged after set
+          setTimeout(() => {
+            _storageListeners.forEach(fn => { try { fn(changes, 'local'); } catch(e) { console.error(e); } });
+            if (cb) cb();
+          }, 0);
+        },
+        remove(keys, cb) {
+          const ks = Array.isArray(keys) ? keys : [keys];
+          const changes = {};
+          ks.forEach(k => {
+            let oldValue;
+            try { oldValue = JSON.parse(localStorage.getItem('oc_pilot_' + k)); } catch {}
+            localStorage.removeItem('oc_pilot_' + k);
+            changes[k] = { oldValue, newValue: undefined };
+          });
+          setTimeout(() => {
+            _storageListeners.forEach(fn => { try { fn(changes, 'local'); } catch(e) {} });
+            if (cb) cb();
+          }, 0);
+        },
+      },
+      onChanged: {
+        addListener(fn) { _storageListeners.push(fn); },
+      },
+    },
+    runtime: {
+      onMessage: { addListener() {} },
+      sendMessage(msg, cb) { if (cb) setTimeout(() => cb({ ok: true }), 0); },
+      lastError: null,
+    },
+    scripting: { executeScript() {} },
+    tabs: { sendMessage() {} },
+  };
+
+  // Expose for test-panel controls
+  window._mockChrome = { _storageListeners };
+})();
+</script>
+
+<!-- ── Page structure ─────────────────────────────────────────────────── -->
+<div id="page-root">
+
+  <!-- Mock masthead -->
+  <header class="mock-masthead">
+    <div class="logo">■ OpenShift</div>
+    <div class="spacer"></div>
+    <span style="font-size:12px;color:#6b7280">Mock Console — OC Pilot test harness</span>
+  </header>
+
+  <div class="mock-page-header">
+    <div style="font-size:12px;color:#9ca3af;margin-bottom:4px">
+      Workloads &rsaquo; Deployments
+    </div>
+    <h1>Deployments</h1>
+  </div>
+
+  <!-- Filter bar (OCP uses data-test-id="item-filter") -->
+  <div class="mock-filter-bar">
+    <input id="name-filter" data-test-id="item-filter"
+           placeholder="Search by name..." autocomplete="off">
+  </div>
+
+  <!-- This outer div is what our code looks for as .co-virtualized-table -->
+  <div class="mock-table-area">
+    <div class="co-virtualized-table">
+      <!-- RV inner container — position:relative (mocked static here) -->
+      <div>
+        <table class="pf-v5-c-table pf-m-compact pf-m-border-rows" id="main-table">
+          <thead>
+            <tr>
+              <th style="width:40%">Name</th>
+              <th style="width:20%">Namespace</th>
+              <th style="width:15%">Status</th>
+              <th style="width:25%">Labels</th>
+            </tr>
+          </thead>
+          <tbody class="pf-v5-c-table__tbody" id="deployments-tbody">
+            <!-- Rows are injected by initRows() below -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Test controls panel ────────────────────────────────────────────── -->
+<div id="test-panel">
+  <h3>★ OC Pilot Test Panel</h3>
+
+  <h4>Favourites storage</h4>
+  <button onclick="showFavs()">Show current _favs</button>
+  <button onclick="clearFavs()" class="danger">Clear all favourites</button>
+
+  <h4>Virtualisation simulation</h4>
+  <button onclick="showRows(0, 10)">Show rows 1–10 (above fold)</button>
+  <button onclick="showRows(10, 20)">Show rows 11–20</button>
+  <button onclick="showRows(20, 30)">Show rows 21–30</button>
+  <button onclick="showAllRows()">Show all rows</button>
+  <button onclick="hideAllRows()">Hide all rows (simulate empty RV)</button>
+
+  <h4>Navigation simulation</h4>
+  <button onclick="navTo('/k8s/ns/default/deployments')">→ /ns/default/deployments</button>
+  <button onclick="navTo('/k8s/all-namespaces/deployments')">→ /all-namespaces/deployments</button>
+  <button onclick="navTo('/k8s/ns/other/deployments')">→ /ns/other/deployments</button>
+  <button onclick="navTo('/k8s/ns/default/deployments/my-app')">→ detail: my-app</button>
+
+  <h4>Log</h4>
+  <div class="log" id="test-log"></div>
+  <button onclick="document.getElementById('test-log').innerHTML=''">Clear log</button>
+</div>
+
+<!-- ── Test-panel JS ──────────────────────────────────────────────────── -->
+<script>
+// ── Sample deployments ─────────────────────────────────────────────────
+const DEPLOYMENTS = [
+  { name: 'my-app',             ns: 'default',              labels: 'app=my-app' },
+  { name: 'backend-api',        ns: 'default',              labels: 'app=backend' },
+  { name: 'frontend',           ns: 'default',              labels: 'app=frontend,tier=web' },
+  { name: 'postgres',           ns: 'default',              labels: 'app=postgres' },
+  { name: 'redis',              ns: 'default',              labels: 'app=redis' },
+  { name: 'worker',             ns: 'default',              labels: 'app=worker' },
+  { name: 'scheduler',          ns: 'default',              labels: 'app=scheduler' },
+  { name: 'notification-svc',   ns: 'default',              labels: 'app=notifications' },
+  { name: 'auth-service',       ns: 'monitoring',           labels: 'app=auth' },
+  { name: 'metrics-server',     ns: 'monitoring',           labels: 'app=metrics' },
+  { name: 'prometheus',         ns: 'monitoring',           labels: 'app=prometheus' },
+  { name: 'alertmanager',       ns: 'monitoring',           labels: 'app=alertmanager' },
+  { name: 'grafana',            ns: 'monitoring',           labels: 'app=grafana' },
+  { name: 'loki',               ns: 'monitoring',           labels: 'app=loki' },
+  { name: 'tempo',              ns: 'monitoring',           labels: 'app=tempo' },
+  { name: 'gateway',            ns: 'infra',                labels: 'app=gateway' },
+  { name: 'ingress-controller', ns: 'infra',                labels: 'app=ingress' },
+  { name: 'cert-manager',       ns: 'infra',                labels: 'app=cert-manager' },
+  { name: 'external-dns',       ns: 'infra',                labels: 'app=external-dns' },
+  { name: 'cluster-autoscaler', ns: 'infra',                labels: 'app=autoscaler' },
+  { name: 'vault',              ns: 'security',             labels: 'app=vault' },
+  { name: 'oauth-proxy',        ns: 'security',             labels: 'app=oauth' },
+  { name: 'audit-logger',       ns: 'security',             labels: 'app=audit' },
+  { name: 'image-scanner',      ns: 'security',             labels: 'app=scanner' },
+  { name: 'policy-controller',  ns: 'security',             labels: 'app=policy' },
+];
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function buildRow(dep, index) {
+  const { name, ns, labels } = dep;
+  const href = `/k8s/ns/${ns}/deployments/${name}`;
+  const nsHref = `/k8s/cluster/projects/${ns}`;
+  const hidden = index >= 10 ? ' virt-hidden' : '';
+  return `
+    <tr data-row-index="${index}" data-dep-ns="${esc(ns)}" class="${hidden}">
+      <td>
+        <a href="${esc(href)}">${esc(name)}</a>
+      </td>
+      <td>
+        <span class="ns-badge">NS</span>
+        <a href="${esc(nsHref)}">${esc(ns)}</a>
+      </td>
+      <td><span class="status-pill">1 of 1 pods</span></td>
+      <td style="font-size:11px;color:#6b7280">${esc(labels)}</td>
+    </tr>`;
+}
+
+// ── Current namespace for the page (mirrors location.pathname parsing) ──
+function getCurrentNs() {
+  const m = location.pathname.match(/^\/k8s\/ns\/([^/]+)\//);
+  return m ? m[1] : null;
+}
+
+function initRows() {
+  const ns = getCurrentNs();
+  const tbody = document.getElementById('deployments-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const filtered = ns
+    ? DEPLOYMENTS.filter(d => d.ns === ns)
+    : DEPLOYMENTS;
+  filtered.forEach((dep, i) => { tbody.innerHTML += buildRow(dep, i); });
+}
+
+// ── Virtualisation controls ─────────────────────────────────────────────
+function showRows(from, to) {
+  document.querySelectorAll('#deployments-tbody tr').forEach((tr, i) => {
+    tr.classList.toggle('virt-hidden', i < from || i >= to);
+  });
+  tlog(`info`, `Showing rows ${from + 1}–${to}`);
+}
+function showAllRows() {
+  document.querySelectorAll('#deployments-tbody tr').forEach(tr => tr.classList.remove('virt-hidden'));
+  tlog('info', 'All rows visible');
+}
+function hideAllRows() {
+  document.querySelectorAll('#deployments-tbody tr').forEach(tr => tr.classList.add('virt-hidden'));
+  tlog('info', 'All rows hidden');
+}
+
+// ── Storage helpers ─────────────────────────────────────────────────────
+function showFavs() {
+  chrome.storage.local.get('ocPilotFavourites', d => {
+    const favs = d.ocPilotFavourites || {};
+    const str = JSON.stringify(favs, null, 2);
+    tlog('info', str.length > 400 ? str.slice(0, 400) + '…' : str);
+  });
+}
+function clearFavs() {
+  chrome.storage.local.set({ ocPilotFavourites: {} }, () => {
+    tlog('ok', 'Cleared all favourites');
+  });
+}
+
+// ── Navigation simulation (fires pushState so onNavigate() runs) ────────
+function navTo(path) {
+  history.pushState({}, '', path);
+  // Also re-init rows for the new namespace
+  initRows();
+  showRows(0, 10); // default: first 10 rows visible
+  tlog('info', 'Navigated to ' + path);
+}
+
+// ── Filter wiring ───────────────────────────────────────────────────────
+const filterInput = document.getElementById('name-filter');
+filterInput.addEventListener('input', () => {
+  const q = filterInput.value.trim().toLowerCase();
+  document.querySelectorAll('#deployments-tbody tr:not(.virt-hidden)').forEach(tr => {
+    const name = tr.querySelector('a[href*="/deployments/"]')?.textContent || '';
+    tr.style.display = (!q || name.toLowerCase().includes(q)) ? '' : 'none';
+  });
+});
+
+// ── Log helper ──────────────────────────────────────────────────────────
+function tlog(type, msg) {
+  const log = document.getElementById('test-log');
+  const line = document.createElement('div');
+  line.className = type;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  log.insertBefore(line, log.firstChild);
+}
+
+// ── Init ────────────────────────────────────────────────────────────────
+initRows();
+
+// Show a start message once the content script (loaded below) has run.
+window.addEventListener('load', () => {
+  tlog('ok', 'Mock console ready. Load content script fires onNavigate automatically.');
+});
+</script>
+
+<!-- ── Load OC Pilot content script ──────────────────────────────────── -->
+<!-- The server proxies this from src/content-console.js at /__oc-pilot/ -->
+<script>
+// Reset the DOM guard so the script re-runs on each page load.
+// The guard uses a data-* attribute (shared DOM, visible to all JS worlds)
+// so the extension's isolated-world content script and this page-world
+// <script> don't both run the IIFE on the same page load.
+delete document.documentElement.dataset.ocPilotConsoleLoaded;
+</script>
+<script src="/__oc-pilot/content-console.js"></script>
+
+</body>
+</html>

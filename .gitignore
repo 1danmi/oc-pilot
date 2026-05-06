@@ -1,0 +1,18 @@
+# Build artefacts
+build/
+
+# Node / Playwright
+node_modules/
+playwright-report/
+test-results/
+.playwright/
+
+# Test secrets and saved auth state
+tests/.env
+.auth-state.json
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
