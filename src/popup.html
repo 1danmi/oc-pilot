@@ -199,6 +199,38 @@
       .tab-only { display: none !important; }
       .popup-only { display: initial; }
 
+      /* ── Developer section — hidden until 5-click easter egg ──────────────── */
+      .dev-section { display: none !important; }
+      body.dev-mode .dev-section { display: block !important; }
+
+      /* Briefly flash the header icon on each click toward dev mode */
+      @keyframes dev-tap { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+      .header-icon.dev-tap { animation: dev-tap 0.15s ease; }
+
+      /* ── Dev-mode toast notification ──────────────────────────────────────── */
+      @keyframes dev-toast-in  { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+      @keyframes dev-toast-out { from { opacity:1; } to { opacity:0; } }
+      #dev-toast {
+        display: none;
+        position: fixed;
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #1e3a2f;
+        color: #3fb950;
+        border: 1px solid #3fb95066;
+        border-radius: 8px;
+        padding: 8px 18px;
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: 0.01em;
+        z-index: 9999;
+        white-space: nowrap;
+        box-shadow: 0 4px 16px #0006;
+      }
+      #dev-toast.show  { display: block; animation: dev-toast-in  0.2s ease forwards; }
+      #dev-toast.hide  { display: block; animation: dev-toast-out 0.4s ease forwards; }
+
       /* ════════════════════════════════════════════════════════════════════════
          TAB MODE  (body.tab-mode — added by JS when ?mode=tab)
          ════════════════════════════════════════════════════════════════════════ */
@@ -225,27 +257,94 @@
         display: grid;
         grid-template-columns: 1fr 1fr;
         grid-template-areas:
-          "login     features"
-          "whats-new whats-new";
+          "login        features"
+          "diagnostics  diagnostics"
+          "whats-new    whats-new";
         gap: 20px;
         max-width: 900px;
         margin: 0 auto;
         padding: 32px 28px 40px;
       }
 
-      body.tab-mode .body              { grid-area: login; }
-      body.tab-mode .features-section  { grid-area: features; }
-      body.tab-mode .whats-new-wrap    { grid-area: whats-new; }
+      body.tab-mode .body                { grid-area: login; }
+      body.tab-mode .features-section    { grid-area: features; }
+      body.tab-mode .diagnostics-section { grid-area: diagnostics; }
+      body.tab-mode .whats-new-wrap      { grid-area: whats-new; }
 
       /* Card chrome (only in tab mode) */
       body.tab-mode .body,
       body.tab-mode .features-section,
+      body.tab-mode .diagnostics-section,
       body.tab-mode .whats-new-wrap {
         background: #13151c;
         border: 1px solid rgba(255,255,255,0.08);
         border-radius: 14px;
         padding: 24px;
       }
+
+      /* Diagnostics layout */
+      body.tab-mode .diag-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 16px 24px;
+        align-items: start;
+      }
+      .diag-row { display: flex; flex-direction: column; gap: 6px; }
+      .diag-row-full { grid-column: 1 / -1; }
+      .diag-label {
+        font-size: 11px; font-weight: 600;
+        color: #6b7280; text-transform: uppercase; letter-spacing: 0.06em;
+      }
+      .diag-value {
+        font-size: 13px; font-family: "SFMono-Regular",Consolas,monospace;
+        color: #d1d5db; word-break: break-all;
+      }
+      .diag-input {
+        width: 100%;
+        background: #0e1015;
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 13px;
+        color: #e5e7eb;
+        font-family: "SFMono-Regular",Consolas,monospace;
+      }
+      .diag-input:focus {
+        outline: none;
+        border-color: rgba(88,166,255,0.6);
+      }
+      .diag-actions {
+        display: flex; gap: 8px; flex-wrap: wrap;
+        margin-top: 4px;
+      }
+      .diag-btn {
+        background: #1e2130; color: #e5e7eb;
+        border: 1px solid rgba(255,255,255,0.18);
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-size: 13px; font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .diag-btn:hover:not(:disabled) {
+        background: #2a3041; border-color: rgba(255,255,255,0.30);
+      }
+      .diag-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .diag-btn-primary {
+        background: #1f6feb; border-color: #1f6feb; color: #fff;
+      }
+      .diag-btn-primary:hover:not(:disabled) {
+        background: #388bfd; border-color: #388bfd;
+      }
+      .diag-status {
+        font-size: 12px;
+        color: #6b7280;
+        align-self: center;
+        min-height: 18px;
+      }
+      .diag-status-ok      { color: #3fb950; }
+      .diag-status-err     { color: #f85149; }
+      .diag-status-pending { color: #d29922; }
 
       /* Remove the inset divider padding trick; use card padding instead */
       body.tab-mode .divider {
@@ -481,9 +580,12 @@
     </style>
   </head>
   <body>
+    <!-- ── Dev-mode toast (hidden until easter egg fires) ───────────────────── -->
+    <div id="dev-toast">🛠 Developer settings enabled</div>
+
     <!-- ── Header ──────────────────────────────────────────────────────────── -->
     <div class="header">
-      <div class="header-icon">
+      <div class="header-icon" id="dev-trigger" title="">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
              stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3" y="11" width="18" height="11" rx="2"/>
@@ -716,6 +818,62 @@
 
         <p style="font-size:11px;color:#374151;margin-top:6px;line-height:1.5">
           Changes take effect on the next page navigation in the console.
+        </p>
+      </div>
+
+      <!-- Developer settings — hidden until 5-click easter egg on header icon. -->
+      <div id="diag-section" class="diagnostics-section dev-section">
+        <div class="card-title">Developer settings</div>
+
+        <div class="diag-grid">
+          <div class="diag-row">
+            <div class="diag-label">Machine ID</div>
+            <div id="diag-machine-id" class="diag-value">—</div>
+          </div>
+
+          <div class="diag-row">
+            <div class="diag-label">Events since last send</div>
+            <div id="diag-counter-sum" class="diag-value">0</div>
+          </div>
+
+          <div class="diag-row">
+            <div class="diag-label">Last successful send</div>
+            <div id="diag-last-send" class="diag-value">never</div>
+          </div>
+
+          <div class="diag-row">
+            <div class="diag-label">Effective endpoint</div>
+            <div id="diag-endpoint" class="diag-value">—</div>
+          </div>
+
+          <div class="diag-row">
+            <div class="diag-label">Next scheduled send</div>
+            <div id="diag-next-fire" class="diag-value">—</div>
+          </div>
+
+          <div class="diag-row diag-row-full">
+            <label class="diag-label" for="diag-interval">Send interval (minutes)</label>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+              <input id="diag-interval" type="number" class="diag-input"
+                     min="1" max="1440" style="width:80px"
+                     placeholder="60" />
+              <button id="diag-apply-interval" type="button" class="diag-btn">Apply</button>
+            </div>
+          </div>
+
+          <div class="diag-row diag-row-full diag-actions">
+            <button id="diag-send-now" type="button" class="diag-btn diag-btn-primary">
+              Send telemetry now
+            </button>
+            <span id="diag-status" class="diag-status"></span>
+          </div>
+        </div>
+
+        <p style="font-size:11px;color:#374151;margin-top:14px;line-height:1.5">
+          The extension sends anonymous usage stats — machine UUID, hashed
+          username, version, and counts of features used — to a self-hosted
+          server every hour. No cluster URLs, resource names, or IPs are sent.
+          See the project README for details.
         </p>
       </div>
 

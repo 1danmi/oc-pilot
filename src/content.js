@@ -2,6 +2,13 @@
   const STORAGE_KEY = "openshiftAutoLogin";
   const LOG_PREFIX = "[oc-pilot]";
 
+  // Fire-and-forget telemetry bump (see server/ for the receiver). Silent on
+  // any failure — a sleeping SW or chrome.runtime hiccup must never break the
+  // login automation flow.
+  function bumpEvent(name) {
+    try { chrome.runtime.sendMessage({ type: "telemetry/bump", event: name }); } catch (_) {}
+  }
+
   // Page-level dedupe flag. Resets on every full navigation because the
   // content script is re-injected. Do NOT use sessionStorage here — it
   // persists across navigations in the same tab and would block re-login
@@ -101,6 +108,7 @@
     if (pageActed) return;
     pageActed = true;
     log("clicking provider target:", describeEl(target));
+    bumpEvent("autologin.providerSelected");
     target.click();
   }
 
@@ -255,6 +263,7 @@
 
       // Use requestSubmit() so form validation / submit events fire normally.
       log("submitting form");
+      bumpEvent("autologin.executed");
       if (typeof form.requestSubmit === "function") form.requestSubmit();
       else form.submit();
     } else {

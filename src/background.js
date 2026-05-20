@@ -15,6 +15,310 @@ const silentTabSource = new Map();
 
 const SILENT_TAB_TIMEOUT_MS = 20000; // 20 s — covers slow clusters + full auth flow
 
+// ── Telemetry ───────────────────────────────────────────────────────────────
+//
+// Every running extension POSTs an anonymous usage-stats heartbeat to a
+// self-hosted FastAPI server every hour (and immediately on install / update).
+// What's collected: machine UUID, hashed OAuth username, version, and a flat
+// {eventName: count} map. What's NEVER collected: cluster URLs, resource names,
+// the actual username, or IPs.
+//
+// Edit the two DEFAULT_* constants below before `pack.ps1`. Both can also be
+// overridden per install via the Diagnostics section in tab-mode settings
+// (openshiftAutoLogin.telemetry.serverUrl / serverToken).
+//
+// All telemetry code is wrapped in try/catch so failures only show up in
+// console.warn — they MUST NEVER break the extension's normal features.
+
+const DEFAULT_TELEMETRY_URL   = "http://localhost:8080/v1/telemetry";
+const DEFAULT_TELEMETRY_TOKEN = "56b6cfd20add569ce0b0c18cb01f91d2dfafec37af5f651ca9a1a439feed123d";
+const TELEMETRY_PERIOD_HOURS  = 1;
+const TELEMETRY_ALARM_NAME    = "oc-pilot-telemetry";
+const TELEMETRY_LOG           = "[oc-pilot:telemetry]";
+
+/**
+ * Atomically increment counters[event] in chrome.storage.local.
+ * Used both by the telemetry/bump message handler AND directly by other
+ * background.js handlers (copylogin.completed / failed).
+ *
+ * Silent on any error — telemetry is best-effort and must never throw.
+ */
+function bumpCounter(event) {
+  if (typeof event !== "string" || !event) return;
+  try {
+    chrome.storage.local.get("openshiftAutoLogin", (data) => {
+      try {
+        if (chrome.runtime.lastError) return;
+        const cfg = (data && data.openshiftAutoLogin) || {};
+        const tel = cfg.telemetry || {};
+        const counters = (tel.counters && typeof tel.counters === "object")
+          ? { ...tel.counters }
+          : {};
+        counters[event] = (counters[event] | 0) + 1;
+        const merged = {
+          ...cfg,
+          telemetry: { ...tel, counters },
+        };
+        chrome.storage.local.set({ openshiftAutoLogin: merged }, () => {
+          if (chrome.runtime.lastError) {
+            console.warn(TELEMETRY_LOG, "bump set failed:", chrome.runtime.lastError);
+          }
+        });
+      } catch (err) {
+        console.warn(TELEMETRY_LOG, "bump callback threw:", err);
+      }
+    });
+  } catch (err) {
+    console.warn(TELEMETRY_LOG, "bump outer threw:", err);
+  }
+}
+
+/** SHA-256("oc-pilot:" + username.toLowerCase()) → lowercase hex. */
+async function hashUsername(username) {
+  if (!username) return null;
+  try {
+    const input = "oc-pilot:" + String(username).toLowerCase();
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+    const bytes = new Uint8Array(buf);
+    let hex = "";
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i].toString(16);
+      hex += b.length === 1 ? "0" + b : b;
+    }
+    return hex;
+  } catch (err) {
+    console.warn(TELEMETRY_LOG, "hashUsername failed:", err);
+    return null;
+  }
+}
+
+/** Promise wrapper around chrome.storage.local.{get,set}. */
+function _storageGet(key) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(key, (data) => resolve(data || {}));
+    } catch (_) { resolve({}); }
+  });
+}
+function _storageSet(obj) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.set(obj, () => resolve());
+    } catch (_) { resolve(); }
+  });
+}
+
+/**
+ * Snapshot current counters, POST them, and on success subtract the snapshot
+ * from the live counters (NOT a reset — bumps that happened mid-flight are
+ * preserved for the next send).
+ *
+ * Options:
+ *   isInstall:       boolean — set on the one-time install POST
+ *   isUpdate:        boolean — set on the one-time update POST
+ *   previousVersion: string  — only meaningful when isUpdate is true
+ *
+ * Returns { ok, eventCount, periodEnd, error? } so the telemetry/sendNow
+ * message handler can surface success/failure to the popup.
+ */
+async function sendTelemetry(opts) {
+  opts = opts || {};
+  try {
+    const data = await _storageGet("openshiftAutoLogin");
+    const cfg = (data && data.openshiftAutoLogin) || {};
+    const tel = cfg.telemetry || {};
+
+    const machineId = tel.machineId;
+    if (!machineId) {
+      // We refuse to send without a machineId — it should be seeded by
+      // onInstalled. If it isn't here, something's very wrong.
+      console.warn(TELEMETRY_LOG, "no machineId — bailing");
+      return { ok: false, error: "no machineId in storage" };
+    }
+
+    const snapshot = (tel.counters && typeof tel.counters === "object") ? { ...tel.counters } : {};
+    const eventCount = Object.values(snapshot).reduce((s, v) => s + (v | 0), 0);
+    const periodEnd = Math.floor(Date.now() / 1000);
+    const periodStart = tel.periodStart || tel.installSentAt || periodEnd;
+
+    const userHash = await hashUsername(cfg.username);
+
+    const url   = (tel.serverUrl   && String(tel.serverUrl).trim())   || DEFAULT_TELEMETRY_URL;
+    const token = (tel.serverToken && String(tel.serverToken).trim()) || DEFAULT_TELEMETRY_TOKEN;
+
+    const body = {
+      machineId,
+      userHash,
+      version: chrome.runtime.getManifest().version,
+      periodStart,
+      periodEnd,
+      counters: snapshot,
+      isInstall: !!opts.isInstall,
+      isUpdate:  !!opts.isUpdate,
+      previousVersion: opts.previousVersion || null,
+    };
+
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token,
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      console.warn(TELEMETRY_LOG, "fetch threw:", err);
+      return { ok: false, error: String(err && err.message || err) };
+    }
+
+    if (!resp.ok) {
+      let bodyText = "";
+      try { bodyText = (await resp.text()).slice(0, 200); } catch (_) {}
+      console.warn(TELEMETRY_LOG, "non-2xx:", resp.status, bodyText);
+      return { ok: false, error: "HTTP " + resp.status + (bodyText ? ": " + bodyText : "") };
+    }
+
+    // Success — subtract the snapshot from live counters (preserves bumps
+    // that happened during the in-flight request).
+    try {
+      const after = await _storageGet("openshiftAutoLogin");
+      const aftercfg = (after && after.openshiftAutoLogin) || {};
+      const aftertel = aftercfg.telemetry || {};
+      const live = (aftertel.counters && typeof aftertel.counters === "object")
+        ? { ...aftertel.counters }
+        : {};
+      for (const k of Object.keys(snapshot)) {
+        const remaining = (live[k] | 0) - (snapshot[k] | 0);
+        if (remaining > 0) live[k] = remaining;
+        else delete live[k];
+      }
+      await _storageSet({
+        openshiftAutoLogin: {
+          ...aftercfg,
+          telemetry: {
+            ...aftertel,
+            counters: live,
+            periodStart: periodEnd,
+            lastSendAt: periodEnd,
+            installSentAt: opts.isInstall ? periodEnd : (aftertel.installSentAt || 0),
+          },
+        },
+      });
+    } catch (err) {
+      console.warn(TELEMETRY_LOG, "post-send storage update failed:", err);
+      // Don't return failure — the server already accepted the data; we just
+      // failed to update local bookkeeping. Worst case, counters are sent twice.
+    }
+
+    return { ok: true, eventCount, periodEnd };
+  } catch (err) {
+    console.warn(TELEMETRY_LOG, "sendTelemetry threw:", err);
+    return { ok: false, error: String(err && err.message || err) };
+  }
+}
+
+/** Read the stored interval (minutes), falling back to the build-time default. */
+async function _getTelemetryIntervalMinutes() {
+  try {
+    const data = await _storageGet("openshiftAutoLogin");
+    const tel = ((data || {}).openshiftAutoLogin || {}).telemetry || {};
+    return (tel.intervalMinutes && tel.intervalMinutes >= 1)
+      ? tel.intervalMinutes
+      : TELEMETRY_PERIOD_HOURS * 60;
+  } catch (_) {
+    return TELEMETRY_PERIOD_HOURS * 60;
+  }
+}
+
+/** Ensure the telemetry alarm exists with the currently configured interval (idempotent). */
+async function ensureTelemetryAlarm() {
+  try {
+    const minutes = await _getTelemetryIntervalMinutes();
+    // Clear first so the period is always up-to-date even if the alarm already exists.
+    await chrome.alarms.clear(TELEMETRY_ALARM_NAME);
+    chrome.alarms.create(TELEMETRY_ALARM_NAME, { periodInMinutes: minutes });
+  } catch (err) {
+    console.warn(TELEMETRY_LOG, "ensureTelemetryAlarm failed:", err);
+  }
+}
+
+// ── Lifecycle hooks: onInstalled, onStartup, onAlarm ───────────────────────
+
+try {
+  chrome.runtime.onInstalled.addListener((details) => {
+    (async () => {
+      try {
+        const data = await _storageGet("openshiftAutoLogin");
+        const cfg = (data && data.openshiftAutoLogin) || {};
+        const tel = cfg.telemetry || {};
+
+        // Seed machineId on first install if missing. Persist immediately so
+        // the first sendTelemetry call can find it.
+        let machineId = tel.machineId;
+        if (!machineId) {
+          machineId = (crypto.randomUUID && crypto.randomUUID()) ||
+                      (Date.now() + "-" + Math.random().toString(36).slice(2));
+        }
+        await _storageSet({
+          openshiftAutoLogin: {
+            ...cfg,
+            telemetry: {
+              ...tel,
+              machineId,
+              counters: tel.counters || {},
+              periodStart: tel.periodStart || Math.floor(Date.now() / 1000),
+              lastSendAt: tel.lastSendAt || 0,
+              installSentAt: tel.installSentAt || 0,
+            },
+          },
+        });
+
+        if (details && details.reason === "install") {
+          bumpCounter("lifecycle.installed");
+          await sendTelemetry({ isInstall: true });
+        } else if (details && details.reason === "update") {
+          bumpCounter("lifecycle.updated");
+          await sendTelemetry({
+            isUpdate: true,
+            previousVersion: details.previousVersion || null,
+          });
+        }
+        ensureTelemetryAlarm();
+      } catch (err) {
+        console.warn(TELEMETRY_LOG, "onInstalled handler threw:", err);
+      }
+    })();
+  });
+} catch (err) {
+  console.warn(TELEMETRY_LOG, "onInstalled registration threw:", err);
+}
+
+try {
+  chrome.runtime.onStartup.addListener(() => {
+    try {
+      bumpCounter("lifecycle.startup");
+      ensureTelemetryAlarm();
+    } catch (err) {
+      console.warn(TELEMETRY_LOG, "onStartup threw:", err);
+    }
+  });
+} catch (err) {
+  console.warn(TELEMETRY_LOG, "onStartup registration threw:", err);
+}
+
+try {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (!alarm || alarm.name !== TELEMETRY_ALARM_NAME) return;
+    sendTelemetry({}).catch((err) => {
+      console.warn(TELEMETRY_LOG, "alarm sendTelemetry threw:", err);
+    });
+  });
+} catch (err) {
+  console.warn(TELEMETRY_LOG, "alarm registration threw:", err);
+}
+
 // ── Message handlers ─────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // ── On-premise console hostname self-registration ──────────────────────────
@@ -105,6 +409,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               style: "error",
             }).catch(() => {});
           }
+          bumpCounter("copylogin.failed");
         }, SILENT_TAB_TIMEOUT_MS);
 
         silentTabSource.set(silentTabId, { sourceTabId, timer, silentWinId });
@@ -141,6 +446,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }).catch(() => {});
     }
 
+    bumpCounter("copylogin.failed");
     sendResponse({ ok: true });
     return false;
   }
@@ -171,6 +477,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             style: ok ? "success" : "error",
           }).catch((err) => console.warn("[oc-pilot:bg] sendMessage to source tab failed:", err));
         }
+        bumpCounter(ok ? "copylogin.completed" : "copylogin.failed");
       })
       .catch((err) => {
         console.warn("[oc-pilot:bg] copyViaOffscreen threw:", err);
@@ -181,10 +488,71 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             style: "error",
           }).catch(() => {});
         }
+        bumpCounter("copylogin.failed");
       });
 
     sendResponse({ ok: true });
     return false;
+  }
+
+  // ── Telemetry: bump a counter ──────────────────────────────────────────────
+  // Sent by content-console.js / content.js / popup.js when the user does
+  // something we want to count. Fire-and-forget — silent on any failure.
+  if (msg && msg.type === "telemetry/bump" && typeof msg.event === "string") {
+    bumpCounter(msg.event);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  // ── Telemetry: get config (from the popup's Developer settings section) ─────
+  if (msg && msg.type === "telemetry/getConfig") {
+    (async () => {
+      try {
+        const intervalMinutes = await _getTelemetryIntervalMinutes();
+        const alarm = await chrome.alarms.get(TELEMETRY_ALARM_NAME);
+        sendResponse({
+          url:             DEFAULT_TELEMETRY_URL,
+          intervalMinutes: intervalMinutes,
+          nextFire:        alarm ? alarm.scheduledTime : null,
+        });
+      } catch (err) {
+        sendResponse({ url: DEFAULT_TELEMETRY_URL, intervalMinutes: TELEMETRY_PERIOD_HOURS * 60, nextFire: null });
+      }
+    })();
+    return true;
+  }
+
+  // ── Telemetry: set interval (from the popup's Developer settings section) ───
+  if (msg && msg.type === "telemetry/setInterval") {
+    const minutes = Math.max(1, parseInt(msg.minutes, 10) || (TELEMETRY_PERIOD_HOURS * 60));
+    (async () => {
+      try {
+        const data = await _storageGet("openshiftAutoLogin");
+        const cfg = (data || {}).openshiftAutoLogin || {};
+        const tel = cfg.telemetry || {};
+        await _storageSet({ openshiftAutoLogin: { ...cfg, telemetry: { ...tel, intervalMinutes: minutes } } });
+        await chrome.alarms.clear(TELEMETRY_ALARM_NAME);
+        chrome.alarms.create(TELEMETRY_ALARM_NAME, { periodInMinutes: minutes });
+        const alarm = await chrome.alarms.get(TELEMETRY_ALARM_NAME);
+        sendResponse({ ok: true, intervalMinutes: minutes, nextFire: alarm ? alarm.scheduledTime : null });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err && err.message || err) });
+      }
+    })();
+    return true;
+  }
+
+  // ── Telemetry: send-now (from the popup's Diagnostics button) ──────────────
+  // Returns true to keep the message channel open for the async response.
+  if (msg && msg.type === "telemetry/sendNow") {
+    sendTelemetry({})
+      .then((res) => { try { sendResponse(res); } catch (_) {} })
+      .catch((err) => {
+        try {
+          sendResponse({ ok: false, error: String(err && err.message || err) });
+        } catch (_) {}
+      });
+    return true;
   }
 
   return false;

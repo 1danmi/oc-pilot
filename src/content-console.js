@@ -28,6 +28,13 @@
     favourites:   true,   // star resources to pin them at the top of list pages
   };
 
+  // ── Telemetry helper ───────────────────────────────────────────────────────
+  // Fire-and-forget bump to the background SW. Wrapped in try/catch so a
+  // sleeping SW or chrome.runtime hiccup NEVER breaks a feature.
+  function bumpEvent(name) {
+    try { chrome.runtime.sendMessage({ type: "telemetry/bump", event: name }); } catch (_) {}
+  }
+
   function loadFeatures(callback) {
     try {
       chrome.storage.local.get('openshiftAutoLogin', (data) => {
@@ -55,7 +62,9 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       if (changes.openshiftAutoLogin) {
-        const f = ((changes.openshiftAutoLogin.newValue || {}).features) || {};
+        const nv = changes.openshiftAutoLogin.newValue || {};
+        const ov = changes.openshiftAutoLogin.oldValue || {};
+        const f = nv.features || {};
         FEATURES = {
           ownerLink:    f.ownerLink    !== false,
           podTerminal:  f.podTerminal  !== false,
@@ -68,10 +77,18 @@
           clickToCopy:  f.clickToCopy  !== false,
           favourites:   f.favourites   !== false,
         };
-        // Re-run navigation handler: clears injected elements then re-injects
-        // only the enabled features. Disabled features' elements are cleaned up
-        // in onNavigate → clearCrossLinks / clearPodActions / id removes.
-        onNavigate();
+        // Skip onNavigate if only telemetry counters changed. bumpCounter writes
+        // openshiftAutoLogin.telemetry.counters on every user action; reacting
+        // with onNavigate() creates a clear→inject→bump→clear feedback loop that
+        // makes the pod action buttons flash and prevents clicks from registering.
+        const nvNoTel = { ...nv, telemetry: undefined };
+        const ovNoTel = { ...ov, telemetry: undefined };
+        if (JSON.stringify(nvNoTel) !== JSON.stringify(ovNoTel)) {
+          // Re-run navigation handler: clears injected elements then re-injects
+          // only the enabled features. Disabled features' elements are cleaned up
+          // in onNavigate → clearCrossLinks / clearPodActions / id removes.
+          onNavigate();
+        }
       }
       if (changes.ocPilotFavourites) {
         _favs = changes.ocPilotFavourites.newValue || {};
@@ -531,6 +548,7 @@
     `;
     btn.addEventListener('mouseenter', () => { btn.style.background = '#1e2130'; btn.style.borderColor = 'rgba(255,255,255,0.30)'; });
     btn.addEventListener('mouseleave', () => { btn.style.background = '#0f1117'; btn.style.borderColor = 'rgba(255,255,255,0.18)'; });
+    btn.addEventListener('click', () => { bumpEvent('click.ownerLink'); });
     return btn;
   }
 
@@ -593,6 +611,7 @@
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      bumpEvent('click.forceDelete');
       forceDeletePod(namespace, podName);
     });
     return btn;
@@ -828,6 +847,7 @@
         tooltip: `Go to ${backend.kind} backing this route`,
         icon: ICON_DEPLOYMENT,
       });
+      btn.addEventListener('click', () => bumpEvent('click.crossLinks.routeToBackend'));
       if (anchor.mode === 'after') anchor.el.insertAdjacentElement('afterend', btn);
       else anchor.el.appendChild(btn);
       console.log(LOG, `✓ injected route-backend button → ${backend.kind}/${backend.name}`);
@@ -907,6 +927,7 @@
           icon: ICON_ROUTE,
         });
         btn.setAttribute('data-oc-pilot-route', r.name);
+        btn.addEventListener('click', () => bumpEvent('click.crossLinks.deploymentToRoute'));
         wrap.appendChild(btn);
 
         addedCount++;
@@ -1139,6 +1160,9 @@
       link.setAttribute('style', 'font-size:13px;text-decoration:none;color:#1fa7f8;word-break:break-all;');
       link.addEventListener('mouseenter', () => { link.style.textDecoration = 'underline'; });
       link.addEventListener('mouseleave', () => { link.style.textDecoration = 'none'; });
+      // Don't preventDefault — opening the external URL in a new tab is the
+      // intended action; we just want to count the engagement.
+      link.addEventListener('click', () => bumpEvent('click.crossLinks.deploymentToRouteUrl'));
       row.appendChild(link);
       row.appendChild(buildDetailsCopyButton(url));
       urlList.appendChild(row);
@@ -1278,6 +1302,7 @@
     el.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
+      bumpEvent('click.clickToCopy');
 
       // "Pressed" animation: quick opacity dip mimicking a button click.
       el.style.transition = 'opacity 0.08s';
@@ -1439,6 +1464,7 @@
       e.preventDefault();
       e.stopPropagation();
       if (btn.dataset.loading) return;
+      bumpEvent('click.copyLoginCmd');
 
       btn.dataset.loading = '1';
       btn.querySelector('span').textContent = 'Fetching…';
@@ -1605,7 +1631,13 @@
         a.style.borderLeftColor = color;
       });
       // Don't let the row's click handler (which navigates to pod details) swallow our click.
-      a.addEventListener('click', (e) => { e.stopPropagation(); });
+      a.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Map the feature key (podTerminal/podLogs/podEvents) directly to its
+        // telemetry event name. Default browser navigation handles the actual
+        // route change — we just count the engagement.
+        bumpEvent('click.' + featureKey);
+      });
       wrap.appendChild(a);
     });
 
@@ -1698,6 +1730,7 @@
     ].join(';'));
     badge.textContent = tag;
     group.appendChild(badge);
+    bumpEvent('inject.podImageTag');
     // Re-run the row-height fixer because the badge may have made the cell taller.
     requestAnimationFrame(fixPodRowHeights);
   }
@@ -2239,6 +2272,8 @@
         e.preventDefault();
         console.log(LOG, 'star click (list):', parsed.namespace, parsed.resourceKind, parsed.resourceName);
         try {
+          const wasFav = isFavourite(parsed.namespace, parsed.resourceKind, parsed.resourceName);
+          bumpEvent(wasFav ? 'click.favourites.remove' : 'click.favourites.add');
           await toggleFavourite(parsed.namespace, parsed.resourceKind, parsed.resourceName);
           const nowFav = isFavourite(parsed.namespace, parsed.resourceKind, parsed.resourceName);
           console.log(LOG, 'star toggled → isFav:', nowFav);
@@ -2818,6 +2853,10 @@
     const makeStarHandler = (namespace, rk, name) => async (e) => {
       e.stopPropagation();
       e.preventDefault();
+      // Bump BEFORE toggleFavourite so the resulting state tells us add-vs-remove
+      // (after the toggle, isFavourite returns the NEW state).
+      const wasFav = isFavourite(namespace, rk, name);
+      bumpEvent(wasFav ? 'click.favourites.remove' : 'click.favourites.add');
       await toggleFavourite(namespace, rk, name);
       const nowFav = isFavourite(namespace, rk, name);
       // Update every star icon for this resource across both tables.
@@ -3128,6 +3167,8 @@
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       e.preventDefault();
+      const wasFav = isFavourite(namespace, resourceKind, resourceName);
+      bumpEvent(wasFav ? 'click.favourites.remove' : 'click.favourites.add');
       await toggleFavourite(namespace, resourceKind, resourceName);
       const nowFav = isFavourite(namespace, resourceKind, resourceName);
       btn.title = nowFav ? 'Remove from favourites' : 'Add to favourites';

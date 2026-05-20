@@ -1,0 +1,9 @@
+services:
+  server:
+    image: oc-pilot-telemetry:local
+    restart: unless-stopped
+    ports:
+      - "${TELEMETRY_PORT:-8080}:8080"
+    volumes:
+      - ./config.yaml:/etc/oc-pilot-telemetry/config.yaml:ro
+      - ./logs:/var/log/oc-pilot-telemetry

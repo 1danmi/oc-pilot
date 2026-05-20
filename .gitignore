@@ -16,3 +16,22 @@ tests/.env
 .idea/
 .DS_Store
 Thumbs.db
+
+# Deployment packages (binary artefacts, transfer manually)
+*.tar.gz
+*.tar
+oc-pilot-telemetry-deploy/
+oc-pilot-mongo-deploy/
+
+# Claude worktrees
+.claude/worktrees/
+
+# Server dashboard build output and deps
+server/dashboard/dist/
+server/dashboard/node_modules/
+
+# Server logs (bind-mounted at runtime)
+server/logs/
+
+# Server local config (contains secrets)
+server/config.yaml

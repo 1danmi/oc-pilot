@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Don't bake any local config or logs into the image
+config.yaml
+logs/
+data/
+
+# Dashboard source — only the built dist/ is needed in the runtime stage,
+# but the Dockerfile stage 1 needs the source, so we DO ship dashboard/.
+# Just exclude its own build artefacts:
+dashboard/node_modules/
+dashboard/dist/
+
+# Misc
+.git/
+.gitignore
+.idea/
+.vscode/
+*.md
+!README.md

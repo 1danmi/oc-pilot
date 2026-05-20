@@ -1,0 +1,45 @@
+# OC Pilot telemetry server configuration.
+#
+# Copy this file to config.yaml (or wherever OC_PILOT_TELEMETRY_CONFIG points,
+# default /etc/oc-pilot-telemetry/config.yaml), fill in the secrets, and bind-mount
+# it into the container.
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+auth:
+  # The shared bearer token that every extension presents on POST /v1/telemetry.
+  # The same value must be baked into src/background.js as DEFAULT_TELEMETRY_TOKEN.
+  # Generate with e.g. `openssl rand -hex 32`.
+  telemetry_token: "REPLACE-ME-with-32-char-random"
+
+  # HTTP basic auth for the dashboard (GET /) and the stats endpoints
+  # (GET /v1/stats, GET /v1/stats/timeseries).
+  stats_username: "admin"
+  stats_password: "REPLACE-ME"
+
+mongodb:
+  # Full MongoDB connection URI. Supports replica sets, auth, TLS — anything
+  # PyMongo's AsyncMongoClient understands.
+  # Examples:
+  #   mongodb://mongo:27017
+  #   mongodb://user:pass@mongo-0,mongo-1,mongo-2:27017/?replicaSet=rs0
+  #   mongodb+srv://user:pass@cluster.mongodb.net/
+  uri: "mongodb://mongo:27017"
+  database: "oc_pilot_telemetry"
+  collection: "events"
+
+  # Max connections in the FastAPI->Mongo pool. 20 is plenty for this workload.
+  max_pool_size: 20
+
+logging:
+  # DEBUG | INFO | WARNING | ERROR
+  level: "INFO"
+
+  # Structured JSON logs rotate by size. Each /v1/telemetry POST becomes
+  # one JSON line; tail this file with Filebeat to ship to Elasticsearch.
+  json_file:
+    path: "/var/log/oc-pilot-telemetry/events.log"
+    max_bytes: 104857600    # 100 MB per file
+    backup_count: 10        # keep 10 rotated files → ~1 GB max retained

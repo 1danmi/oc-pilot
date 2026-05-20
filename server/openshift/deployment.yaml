@@ -1,0 +1,165 @@
+# OpenShift deployment of the OC Pilot telemetry server.
+#
+# Assumes an EXTERNAL MongoDB (deploy via the cluster's Mongo operator, the
+# bitnami helm chart, or point at a managed instance). The connection URI
+# lives in the Secret `oc-pilot-telemetry-mongo`.
+#
+# Bootstrap:
+#   oc new-project oc-pilot-telemetry
+#
+#   # 1) the FastAPI config (paste your real config.yaml in, then):
+#   oc create secret generic oc-pilot-telemetry-config \
+#       --from-file=config.yaml=./config.yaml
+#
+#   # 2) (if not embedded in config.yaml) the Mongo URI as a separate secret
+#   #    so it can rotate independently of the rest of the config:
+#   oc create secret generic oc-pilot-telemetry-mongo \
+#       --from-literal=uri='mongodb://user:pass@mongo:27017/?authSource=admin'
+#
+#   oc apply -f openshift/deployment.yaml
+#   oc get route oc-pilot-telemetry -o jsonpath='{.spec.host}'
+#
+# The image must be pushed somewhere the cluster can pull from.
+# Update `image:` below to wherever you pushed (e.g. an internal Quay).
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: oc-pilot-telemetry-logs
+  labels:
+    app: oc-pilot-telemetry
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oc-pilot-telemetry
+  labels:
+    app: oc-pilot-telemetry
+spec:
+  # Single replica only — the server writes the JSON log file via
+  # RotatingFileHandler, which doesn't tolerate concurrent writers.
+  # If you need HA, move logs to stdout-only and bump this.
+  replicas: 1
+  strategy:
+    type: Recreate     # serialise — see replicas comment
+  selector:
+    matchLabels:
+      app: oc-pilot-telemetry
+  template:
+    metadata:
+      labels:
+        app: oc-pilot-telemetry
+    spec:
+      containers:
+        - name: server
+          # ⇩ change me to wherever you pushed the image built from server/Dockerfile.
+          image: image-registry.openshift-image-registry.svc:5000/oc-pilot-telemetry/server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: OC_PILOT_TELEMETRY_CONFIG
+              value: /etc/oc-pilot-telemetry/config.yaml
+            # Pull the Mongo URI in via env so it can rotate without
+            # rebuilding the config file. app.py sees the URI from config.yaml,
+            # so the secret is mounted (below) directly into the config file
+            # via a downward write — OR you can edit config.yaml to use
+            # `${MONGO_URI}` and have the entry point expand it.
+            # Simplest: just put the URI inside config.yaml. The block below
+            # is here in case you prefer a separate secret rotation.
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: oc-pilot-telemetry-mongo
+                  key: uri
+                  optional: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/oc-pilot-telemetry
+              readOnly: true
+            - name: logs
+              mountPath: /var/log/oc-pilot-telemetry
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: config
+          secret:
+            secretName: oc-pilot-telemetry-config
+        - name: logs
+          persistentVolumeClaim:
+            claimName: oc-pilot-telemetry-logs
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oc-pilot-telemetry
+  labels:
+    app: oc-pilot-telemetry
+spec:
+  selector:
+    app: oc-pilot-telemetry
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: oc-pilot-telemetry
+  labels:
+    app: oc-pilot-telemetry
+  annotations:
+    haproxy.router.openshift.io/timeout: 15s
+spec:
+  to:
+    kind: Service
+    name: oc-pilot-telemetry
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

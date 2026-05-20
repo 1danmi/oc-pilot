@@ -1,5 +1,11 @@
 const STORAGE_KEY = "openshiftAutoLogin";
 
+// Fire-and-forget telemetry bump. Silent on any failure — telemetry must never
+// break the settings UI.
+function bumpEvent(name) {
+  try { chrome.runtime.sendMessage({ type: "telemetry/bump", event: name }); } catch (_) {}
+}
+
 // Ephemeral "unsaved" draft of the add-override form. Lives in
 // chrome.storage.session so it survives popup-close/reopen within the same
 // browser session but NOT a browser restart. Keyed implicitly by the host
@@ -111,6 +117,7 @@ function save() {
     chrome.storage.local.set({ [STORAGE_KEY]: cfg }, () => {
       updateStatus(cfg);
       flash("Saved successfully", "show-ok");
+      bumpEvent("settings.credentialsSaved");
     });
   });
 }
@@ -327,6 +334,7 @@ function saveClusterColour(host, colour) {
     chrome.storage.local.set({ ocPilotClusterColours: map }, () => {
       document.querySelectorAll('.colour-swatch').forEach((b) =>
         b.classList.toggle('selected', b.dataset.colour === colour));
+      bumpEvent(colour ? "settings.colour.set" : "settings.colour.cleared");
     });
   });
 }
@@ -404,6 +412,7 @@ function addOverride() {
       hideAddForm();
       renderOverrides(overrides);
       flash("Override added", "show-ok");
+      bumpEvent("settings.override.added");
     });
   });
 }
@@ -417,6 +426,7 @@ function deleteOverride(host) {
     chrome.storage.local.set({ [STORAGE_KEY]: cfg }, () => {
       renderOverrides(overrides);
       flash("Override removed", "show-clear");
+      bumpEvent("settings.override.removed");
     });
   });
 }
@@ -430,28 +440,211 @@ function escHtml(s) {
 // ── Auto-save for Console features (tab mode only) ───────────────────────────
 // Reads the current state of all feat-* checkboxes and merges it into storage
 // without touching the login credentials. Shows a small toast on success.
-function saveFeatures() {
+// `changedFlag` (optional) is the name of the flag the user just toggled —
+// used to emit a precise telemetry event like settings.featureToggled.<name>.on.
+function saveFeatures(changedFlag) {
   chrome.storage.local.get(STORAGE_KEY, (data) => {
     const existing = data[STORAGE_KEY] || {};
-    const cfg = {
-      ...existing,
-      features: {
-        ownerLink:    $("feat-ownerLink").checked,
-        podTerminal:  $("feat-podTerminal").checked,
-        podLogs:      $("feat-podLogs").checked,
-        podEvents:    $("feat-podEvents").checked,
-        podImageTag:  $("feat-podImageTag").checked,
-        forceDelete:  $("feat-forceDelete").checked,
-        crossLinks:   $("feat-crossLinks").checked,
-        loginToast:   $("feat-loginToast").checked,
-        copyLoginCmd: $("feat-copyLoginCmd").checked,
-        clickToCopy:  $("feat-clickToCopy").checked,
-        favourites:   $("feat-favourites").checked,
-      },
+    const features = {
+      ownerLink:    $("feat-ownerLink").checked,
+      podTerminal:  $("feat-podTerminal").checked,
+      podLogs:      $("feat-podLogs").checked,
+      podEvents:    $("feat-podEvents").checked,
+      podImageTag:  $("feat-podImageTag").checked,
+      forceDelete:  $("feat-forceDelete").checked,
+      crossLinks:   $("feat-crossLinks").checked,
+      loginToast:   $("feat-loginToast").checked,
+      copyLoginCmd: $("feat-copyLoginCmd").checked,
+      clickToCopy:  $("feat-clickToCopy").checked,
+      favourites:   $("feat-favourites").checked,
     };
+    const cfg = { ...existing, features };
     chrome.storage.local.set({ [STORAGE_KEY]: cfg }, () => {
       flash("Feature saved", "show-ok");
+      if (changedFlag && Object.prototype.hasOwnProperty.call(features, changedFlag)) {
+        const onOff = features[changedFlag] ? "on" : "off";
+        bumpEvent("settings.featureToggled." + changedFlag + "." + onOff);
+      }
     });
+  });
+}
+
+// ── Diagnostics (tab mode only) ──────────────────────────────────────────────
+//
+// Lets the developer:
+//   • see the current machine UUID, counter sum, last successful send time,
+//     and which telemetry endpoint is actually in use.
+//   • override the telemetry server URL / bearer token per install — handy
+//     when redirecting traffic to a test instance without re-packing the CRX.
+//   • flush the in-storage counters NOW by triggering a synchronous send
+//     in background.js (the "Send telemetry now" button).
+//
+// No event is bumped for the manual-send button itself — that would inflate
+// counts and isn't user behaviour we care to track.
+
+function formatRelative(unixSec) {
+  if (!unixSec) return "never";
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - Number(unixSec));
+  if (diff < 60)    return `${diff}s ago`;
+  if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function diagStatus(msg, kind) {
+  // kind: '' (neutral) | 'ok' | 'err' | 'pending'
+  const el = $("diag-status");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "diag-status" + (kind ? " diag-status-" + kind : "");
+}
+
+function refreshDiagnostics() {
+  if (!IS_TAB) return;
+  if (!$("diag-machine-id")) return;
+  chrome.storage.local.get(STORAGE_KEY, (data) => {
+    const cfg = (data || {})[STORAGE_KEY] || {};
+    const tel = cfg.telemetry || {};
+    const counters = tel.counters || {};
+    const sum = Object.values(counters).reduce((s, v) => s + ((v | 0) || 0), 0);
+    const machineId = tel.machineId || "(not seeded yet)";
+    $("diag-machine-id").textContent = machineId.length > 8 ? machineId.slice(0, 8) + "…" : machineId;
+    $("diag-machine-id").title = machineId;
+    $("diag-counter-sum").textContent = String(sum);
+    $("diag-last-send").textContent = formatRelative(tel.lastSendAt);
+    // Fetch URL, interval and next-fire time from background.
+    try {
+      chrome.runtime.sendMessage({ type: "telemetry/getConfig" }, (cfg) => {
+        if (chrome.runtime.lastError || !cfg) return;
+        if ($("diag-endpoint")) {
+          const url = cfg.url || "(unknown)";
+          $("diag-endpoint").textContent = url;
+          $("diag-endpoint").title = url;
+        }
+        // Interval — only pre-fill the input if the user isn't actively editing it.
+        const intervalInput = $("diag-interval");
+        if (intervalInput && document.activeElement !== intervalInput) {
+          intervalInput.value = cfg.intervalMinutes || "";
+          intervalInput.placeholder = String(cfg.intervalMinutes || 60);
+        }
+        // Next scheduled send time.
+        if ($("diag-next-fire")) {
+          $("diag-next-fire").textContent = cfg.nextFire
+            ? new Date(cfg.nextFire).toLocaleTimeString()
+            : "—";
+        }
+      });
+    } catch (_) {}
+  });
+}
+
+
+function sendTelemetryNow() {
+  const btn = $("diag-send-now");
+  if (!btn) return;
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Sending…";
+  diagStatus("Sending…", "pending");
+
+  try {
+    chrome.runtime.sendMessage({ type: "telemetry/sendNow" }, (res) => {
+      const lastErr = chrome.runtime.lastError;
+      btn.disabled = false;
+      btn.textContent = originalText;
+      if (lastErr) {
+        diagStatus("Failed: " + lastErr.message, "err");
+      } else if (res && res.ok) {
+        diagStatus(
+          `Sent ${res.eventCount || 0} event${res.eventCount === 1 ? "" : "s"} at ${new Date().toLocaleTimeString()}`,
+          "ok"
+        );
+        refreshDiagnostics();
+      } else {
+        diagStatus("Failed: " + ((res && res.error) || "see console"), "err");
+      }
+      setTimeout(() => diagStatus("", ""), 5000);
+    });
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = originalText;
+    diagStatus("Failed: " + String(err && err.message || err), "err");
+  }
+}
+
+function applyTelemetryInterval() {
+  const input = $("diag-interval");
+  if (!input) return;
+  const minutes = parseInt(input.value, 10);
+  if (!minutes || minutes < 1) {
+    diagStatus("Enter a number ≥ 1", "err");
+    setTimeout(() => diagStatus("", ""), 3000);
+    return;
+  }
+  const btn = $("diag-apply-interval");
+  if (btn) btn.disabled = true;
+  diagStatus("Applying…", "pending");
+  try {
+    chrome.runtime.sendMessage({ type: "telemetry/setInterval", minutes }, (res) => {
+      if (btn) btn.disabled = false;
+      if (chrome.runtime.lastError || !res) {
+        diagStatus("Failed: " + (chrome.runtime.lastError?.message || "no response"), "err");
+      } else if (res.ok) {
+        diagStatus(`Interval set to ${res.intervalMinutes} min — next send at ${res.nextFire ? new Date(res.nextFire).toLocaleTimeString() : "?"}`, "ok");
+        refreshDiagnostics();
+      } else {
+        diagStatus("Failed: " + (res.error || "unknown"), "err");
+      }
+      setTimeout(() => diagStatus("", ""), 5000);
+    });
+  } catch (err) {
+    if (btn) btn.disabled = false;
+    diagStatus("Failed: " + String(err && err.message || err), "err");
+  }
+}
+
+function initDiagnostics() {
+  if (!IS_TAB) return;
+
+  // ── Easter-egg: 5 clicks on the header icon within 3 s reveals dev section ─
+  let devTapCount = 0;
+  let devTapTimer = null;
+  const devTrigger = $("dev-trigger");
+  if (!devTrigger) return;
+
+  devTrigger.style.cursor = "default";
+  devTrigger.addEventListener("click", () => {
+    // Brief flash on each tap so the developer gets tactile feedback
+    devTrigger.classList.remove("dev-tap");
+    void devTrigger.offsetWidth;           // reflow to restart animation
+    devTrigger.classList.add("dev-tap");
+
+    devTapCount++;
+    clearTimeout(devTapTimer);
+
+    if (devTapCount >= 5) {
+      devTapCount = 0;
+      document.body.classList.add("dev-mode");
+      refreshDiagnostics();
+      if ($("diag-send-now"))       $("diag-send-now").addEventListener("click", sendTelemetryNow);
+      if ($("diag-apply-interval")) $("diag-apply-interval").addEventListener("click", applyTelemetryInterval);
+      setInterval(refreshDiagnostics, 2000);
+
+      // Toast notification
+      const toast = $("dev-toast");
+      if (toast) {
+        toast.classList.remove("hide");
+        toast.classList.add("show");
+        setTimeout(() => {
+          toast.classList.remove("show");
+          toast.classList.add("hide");
+          setTimeout(() => toast.classList.remove("hide"), 400);
+        }, 2500);
+      }
+    } else {
+      // Reset count if no further click within 3 s
+      devTapTimer = setTimeout(() => { devTapCount = 0; }, 3000);
+    }
   });
 }
 
@@ -460,6 +653,10 @@ function saveFeatures() {
 document.addEventListener("DOMContentLoaded", () => {
   // Activate wide dark layout when opened as a full tab.
   if (IS_TAB) document.body.classList.add("tab-mode");
+
+  // Telemetry: which mode are we in? Bump immediately so even an instantly-
+  // closed popup is counted.
+  bumpEvent(IS_TAB ? "settings.tabOpened" : "popup.opened");
 
   load();
   $("save").addEventListener("click", save);
@@ -473,12 +670,15 @@ document.addEventListener("DOMContentLoaded", () => {
     chrome.tabs.create({ url: chrome.runtime.getURL("popup.html?mode=tab") });
   });
 
-  // Console-feature toggles auto-save on change (tab mode only).
+  // Console-feature toggles auto-save on change (tab mode only). Pass the
+  // checkbox id stripped of the `feat-` prefix so saveFeatures can emit a
+  // precise telemetry event like settings.featureToggled.podTerminal.on.
   if (IS_TAB) {
     ["feat-ownerLink", "feat-podTerminal", "feat-podLogs", "feat-podEvents", "feat-podImageTag", "feat-forceDelete",
      "feat-crossLinks", "feat-loginToast", "feat-copyLoginCmd",
      "feat-clickToCopy", "feat-favourites"].forEach((id) => {
-      $(id).addEventListener("change", saveFeatures);
+      const flagName = id.replace(/^feat-/, "");
+      $(id).addEventListener("change", () => saveFeatures(flagName));
     });
   }
 
@@ -490,4 +690,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Cluster colour picker — show only in popup mode on a console tab.
   getCurrentHost().then((host) => { if (host) initClusterColourPicker(host); });
+
+  // Diagnostics — tab mode only.
+  initDiagnostics();
 });
