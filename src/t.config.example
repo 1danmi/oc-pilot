@@ -1,0 +1,5 @@
+{
+  "_comment": "Copy this file to t.config (same directory, drop the .example suffix) and fill in real values. background.js reads t.config at runtime via fetch(chrome.runtime.getURL('t.config')). t.config is .gitignored and excluded from CRX builds by pack.ps1 (deleted from staging before zip). If t.config is missing or its values are empty, telemetry is disabled and a single log line is written to the SW console at startup.",
+  "url":   "http://your-telemetry-server.example.com/v1/telemetry",
+  "token": "your-bearer-token-here"
+}

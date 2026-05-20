@@ -1,25 +1,55 @@
 # OC Pilot — Changelog
 
+## [0.25.18] — 2026-05-20
+
+### Build: `t.config` moved into extension folder; telemetry now loaded at runtime
+
+Previously `t.config` lived at the repo root and `pack.ps1` injected its
+values into `background.js` as build-time substitutions. This only worked
+for CRX builds — unpacked installs (Load unpacked → `src/`) loaded
+`background.js` directly with placeholder text, so telemetry was always
+disabled for unpacked installs.
+
+`t.config` now lives in `src/` (the extension folder). `background.js`
+reads it at SW startup using `fetch(chrome.runtime.getURL("t.config"))`.
+This works for both unpacked and CRX installs. `pack.ps1` is updated to
+delete `t.config` from the staging directory before zipping, so it is
+never bundled into the CRX. The build-time placeholder substitution has
+been removed entirely.
+
+`src/t.config` is `.gitignore`d. `src/t.config.example` documents the
+schema:
+
+```json
+{ "url": "http://your-server/v1/telemetry", "token": "your-token" }
+```
+
+If the file is absent or incomplete at runtime, the SW logs one line and
+telemetry is disabled — same behaviour as before, but now consistent
+across both unpacked and CRX installs.
+
+---
+
 ## [0.25.17] — 2026-05-20
 
-### Build: telemetry URL+token now injected from gitignored `telemetry-config.json`
+### Build: telemetry URL+token now injected from gitignored `t.config`
 
 `DEFAULT_TELEMETRY_URL` and `DEFAULT_TELEMETRY_TOKEN` in `src/background.js`
 were getting overwritten on every code change because the real values can't
 be checked into the repo. They are now build-time placeholders
 (`__OC_PILOT_TELEMETRY_URL__` / `__OC_PILOT_TELEMETRY_TOKEN__`) that
-`pack.ps1` substitutes from a new `telemetry-config.json` file at the repo
-root.
+`pack.ps1` substitutes from a `t.config` file at the repo root.
 
-`telemetry-config.json` is `.gitignore`d and is NOT bundled into the CRX —
-`pack.ps1` stages `src/` to a temp directory, does the substitution there,
-then zips and signs from the staged copy. The working tree is never
-modified by the build. A `telemetry-config.example.json` is checked in to
-document the schema.
+`t.config` is `.gitignore`d and is NOT bundled into the CRX — `pack.ps1`
+stages `src/` to a temp directory, does the substitution there, then zips
+and signs from the staged copy. The working tree is never modified by the
+build. A `t.config.example` is checked in to document the schema, and
+`pack.ps1` aborts the build if it ever finds a `t.config` accidentally
+copied into `src/` (safety guard against bundling secrets).
 
 If the file is missing or its values are empty, the placeholders remain in
 the bundled `background.js`. At SW startup the runtime detects this and:
-- Writes one log line: `[oc-pilot:telemetry] disabled — no build-time config (telemetry-config.json missing at pack time). Configure URL+token via the popup's tab-mode Diagnostics section to enable on this machine.`
+- Writes one log line: `[oc-pilot:telemetry] disabled — no build-time config (t.config missing at pack time). Configure URL+token via the popup's tab-mode Diagnostics section to enable on this machine.`
 - Returns early from `sendTelemetry()` — no network attempt
 - Returns an empty URL from `telemetry/getConfig` so the popup UI doesn't show placeholder text
 

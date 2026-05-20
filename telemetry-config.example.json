@@ -1,5 +1,0 @@
-{
-  "_comment": "Copy this file to telemetry-config.json (same directory) and fill in real values. pack.ps1 will substitute these into src/background.js inside the CRX. The file itself is NOT bundled into the CRX. If telemetry-config.json is missing or its values are empty, the placeholders remain and the extension disables telemetry at runtime (a single log line is written to the SW console at startup).",
-  "url":   "http://your-telemetry-server.example.com/v1/telemetry",
-  "token": "your-bearer-token-here"
-}

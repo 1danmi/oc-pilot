@@ -36,6 +36,7 @@ server/logs/
 # Server local config (contains secrets)
 server/config.yaml
 
-# Extension build-time telemetry config (contains the bearer token).
-# Substituted into background.js by pack.ps1; never bundled into the CRX.
-telemetry-config.json
+# Extension telemetry config — lives in src/ for runtime loading by background.js.
+# Contains the bearer token. Excluded from CRX builds by pack.ps1 (deleted from
+# staging before zip). Never committed; copy src/t.config.example to src/t.config.
+src/t.config
