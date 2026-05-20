@@ -49,7 +49,14 @@
       "Bash(git -C \"/c/Users/danielm/Desktop/Claude Code/oc-pilot\" log --oneline -10)",
       "PowerShell($root = 'C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot'; \"=== src/ ===\"; Get-ChildItem \"$root\\\\src\" -File | Select-Object Name, Length, @{N='Modified';E={$_.LastWriteTime.ToString\\('yyyy-MM-dd HH:mm'\\)}} | Format-Table -AutoSize | Out-String; \"=== dist/ ===\"; Get-ChildItem \"$root\\\\dist\" -File | Select-Object Name, Length, @{N='Modified';E={$_.LastWriteTime.ToString\\('yyyy-MM-dd HH:mm'\\)}} | Format-Table -AutoSize | Out-String; \"=== src vs dist file lists ===\"; $srcFiles = \\(Get-ChildItem \"$root\\\\src\" -File\\).Name | Sort-Object; $distFiles = \\(Get-ChildItem \"$root\\\\dist\" -File\\).Name | Sort-Object; \"in src not in dist:\"; \\(Compare-Object $srcFiles $distFiles | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject\\) -join ', '; \"in dist not in src:\"; \\(Compare-Object $srcFiles $distFiles | Where-Object SideIndicator -eq '=>' | ForEach-Object InputObject\\) -join ', ')",
       "Bash(npm test *)",
-      "Bash(.\\\\pack.ps1)"
+      "Bash(.\\\\pack.ps1)",
+      "Bash(crc status *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:9000)",
+      "Bash(dir \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\\" 2>&1 | head -30)",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\danielm\\\\\" -Recurse -Filter \"package.json\" -Depth 3 -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch \"node_modules|AppData\" } | Select-Object FullName | Select-Object -First 20)",
+      "PowerShell($docs = [Environment]::GetFolderPath\\('MyDocuments'\\); Get-ChildItem $docs -Depth 1 -ErrorAction SilentlyContinue | Format-Table Name, LastWriteTime -AutoSize | Select-Object -First 30)",
+      "Bash(git -C \"/c/Users/danielm/Desktop/Claude Code/oc-pilot\" add .claude/settings.local.json CHANGELOG.md src/background.js src/content-console.js src/content.js src/manifest.json tests/TEST-PLAN.md tests/favourites-list-regression.spec.ts)",
+      "Bash(git -C '/c/Users/danielm/Desktop/Claude Code/oc-pilot' commit -m ' *)"
     ]
   },
   "hooks": {

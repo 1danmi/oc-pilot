@@ -1,5 +1,153 @@
 # OC Pilot — Changelog
 
+## [0.25.16] — 2026-05-20
+
+### Redesign: Copy Login — openshift-challenging-client Basic-auth flow
+
+The previous fetch-based attempt (0.25.14–0.25.15) failed silently on real
+clusters because the OAuth server's session cookie is `SameSite=Lax`, and
+`host_permissions: ["<all_urls>"]` does NOT override SameSite. Background SW
+fetches to `oauth-openshift.apps.*` are "cross-site" relative to the
+extension's `chrome-extension://…` origin, so the cookie is stripped — the
+GET to `/oauth/token/request` was being redirected to the login page even
+though the user is logged in via the console.
+
+**New approach:** OpenShift ships a built-in OAuth client named
+`openshift-challenging-client` designed for HTTP Basic auth — the same
+mechanism `oc login --username=… --password=…` uses internally. Since OC
+Pilot already stores the user's credentials, we can authenticate directly:
+
+```
+GET /oauth/authorize?client_id=openshift-challenging-client&response_type=token
+  Authorization: Basic <base64(user:pass)>
+  X-CSRF-Token: 1
+```
+
+The server responds 302 with `Location: <redirect>#access_token=sha256~…`,
+which we capture via `chrome.webRequest.onBeforeRedirect` (the response
+itself is opaqueredirect — body and headers unreadable, but the webRequest
+event still fires before the redirect is materialized). The API server URL
+is derived from the OAuth origin: `oauth-openshift.apps.<base>` →
+`api.<base>:6443`.
+
+**Manifest:** Added `"webRequest"` permission (observation-only, no header
+modification). Chrome will prompt to re-approve the extension on update;
+this is required to read the Location header of the OAuth redirect.
+
+**Compatibility:**
+- ✓ kubeadmin, htpasswd, LDAP (simple bind), Keystone
+- ✗ GitHub, GitLab, Google, OIDC, RequestHeader — these require interactive
+  browser flows. The button surfaces a clear "unsupported-provider" toast.
+
+**Error toasts** are now specific:
+- `"Configure your username and password in OC Pilot settings…"` (no creds)
+- `"Authentication failed — the stored username or password is incorrect…"`
+- `"This cluster's identity provider does not support Basic auth…"`
+- `"Could not derive the API server URL — non-standard OpenShift install"`
+
+Authentication features remain manual-only per CLAUDE.md (no Playwright tests).
+
+---
+
+## [0.25.14] — 2026-05-20
+
+### Redesign: Copy Login — direct background fetch (no tab opened)
+
+Replaced the tab-based Copy Login flow with a direct `fetch()` from the
+background service worker.
+
+**Previous approach (0.25.11–0.25.13):** Background opened a silent/minimized
+tab, waited for `content.js` to navigate the OAuth pages and relay the command
+back via message passing. This was fragile: `chrome.windows.create` failed
+with `state:"minimized"` on most Chrome versions, and `chrome.tabs.create`
+triggered "Extension context invalidated" errors in already-open tabs.
+
+**New approach:** The user is already authenticated — their browser holds live
+session cookies for `oauth-openshift.apps.*`. The background service worker
+calls `fetch(tokenRequestUrl, { credentials: 'include' })`, which Chrome
+includes those cookies in (permitted by `host_permissions: ["<all_urls>"]`).
+The SW then:
+1. GETs `/oauth/token/request` (session cookie included → already authed)
+2. Parses the CSRF token from the HTML response
+3. POSTs to `/oauth/token/display` with the CSRF token
+4. Extracts `oc login --token=… --server=…` from the response HTML
+5. (Repeats step 2–4 once for newer OCP 4.14+ two-step display flow)
+
+No tab opened, no content script involvement, completes in < 1 second.
+
+**Also fixed:** "Extension context invalidated" now shows "Extension updated —
+please refresh the page" instead of the generic "Failed to start token fetch".
+
+---
+
+## [0.25.13] — 2026-05-20
+
+### Bug fix: Copy Login — "Could not open token-fetch window" on all clusters
+
+`chrome.windows.create({ state: "minimized" })` fails silently on many
+Chrome versions and OS combinations: the callback receives either a null
+window or a window with an empty `tabs` array, so the extension immediately
+showed the error toast.
+
+**Root cause:** Chrome's windows API does not reliably support creating a
+window in the minimized state at construction time. The API call appears to
+succeed (no thrown exception) but delivers a broken result with no tab info.
+
+**Fix:** Replaced `chrome.windows.create(...)` with
+`chrome.tabs.create({ active: false })`. A background (inactive) tab is
+universally supported, always delivers a usable `tab.id`, and keeps the
+OAuth flow out of the user's focus. The tab is removed as soon as
+`loginCommandReady` is received (or on timeout).
+
+Also added `chrome.runtime.lastError` checking and logging in the creation
+callback so future failures surface with an actionable error message instead
+of a generic toast.
+
+---
+
+## [0.25.12] — 2026-05-20
+
+### Diagnostic: Copy Login flow — full silent-tab logging relay
+
+The Copy Login button has an undiagnosed failure mode. Because the silent
+popup window closes before DevTools can be attached, all `console.log` output
+from `content.js` inside it was invisible.
+
+**What's new:** A `silentLog(label, data)` helper in `content.js` logs locally
+AND relays every event to the background service worker via a `silentTabLog`
+message. The background logs them as `[oc-pilot:silent]` entries in its own
+persistent console, which survives after the tab closes.
+
+**How to diagnose a broken "Copy Login":**
+1. Open `chrome://extensions`, find OC Pilot, click **"Inspect views: service worker"**.
+2. Clear the console, then click the Copy Login button in the OC console.
+3. Look for the `[oc-pilot:silent]` lines — they tell you exactly which step
+   the flow reached and what was on each page.
+
+**Key logged checkpoints (all prefixed `[oc-pilot:silent]`):**
+- `main.entry` — content.js loaded; URL, silent-mode detection, hasCreds
+- `handleTokenRequest` — entering the /token/request handler
+- `tryClickDisplayToken.miss0.*` — full snapshot (URL, readyState, all forms,
+  all buttons, body preview) on the first attempt if the button isn't found
+- `tryClickDisplayToken.click` — which element was clicked
+- `tryClickDisplayToken.gaveUp` — body preview after all 15 retries fail
+- `handleTokenDisplay.entry` — entering the /token/display handler
+- `handleTokenDisplay.clickDisplayBtn` — clicked the inner Display Token button
+- `handleTokenDisplay.noDisplayBtn2s.*` — buttons + body after 2 s without finding it
+- `handleTokenDisplay.noCmd` — body preview when no `oc login` command found
+- `handleTokenDisplay.cmdFound` — command extracted (first 80 chars)
+- `handleTokenDisplay.sendingReady` — about to send loginCommandReady
+- `handleTokenDisplay.sendReadyError` / `.sendReadyThrew` — if the send fails
+- `sendLoginCommandFailed` — fast-fail path triggered
+
+Also improved: `loginCommandReady` handler in background.js now logs all
+current `silentTabSource` keys when the expected entry is missing, making
+tab-ID mismatch bugs immediately visible.
+
+No functional change to the Copy Login flow itself.
+
+---
+
 ## [0.25.10] — 2026-05-06
 
 ### Bug fix: star buttons unclickable after un-starring (without scrolling)

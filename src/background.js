@@ -6,15 +6,6 @@ const OFFSCREEN_URL = "offscreen.html";
 // to finish loading a page within the same 30-second window.
 const pendingLoginTabs = new Map(); // tabId → { username, ts }
 
-// ── Silent token-fetch tab registry ─────────────────────────────────────────
-// Maps silentTabId → { sourceTabId, timer } so we can:
-//   • route loginCommandReady back to the right console tab
-//   • cancel the timeout when the flow completes
-//   • timeout-close the tab and show a failure toast if it never responds
-const silentTabSource = new Map();
-
-const SILENT_TAB_TIMEOUT_MS = 20000; // 20 s — covers slow clusters + full auth flow
-
 // ── Telemetry ───────────────────────────────────────────────────────────────
 //
 // Every running extension POSTs an anonymous usage-stats heartbeat to a
@@ -358,133 +349,58 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   // ── Console header "Copy Login" button ─────────────────────────────────────
-  // Opens a minimised popup window at the OAuth token-request URL with
-  // ?oc-pilot-silent=1.  content.js runs there: clicks "Display Token", reads
-  // the command from the display page, and sends loginCommandReady back instead
-  // of writing to clipboard (background tabs don't have user activation for
-  // clipboard writes).  Using a minimised popup window instead of a plain
-  // background tab keeps the silent session completely out of the user's tab
-  // strip.  A 20-second timeout ensures we always show a toast even if the
-  // flow fails.
+  // The user is already authenticated in their browser — their session cookies
+  // for oauth-openshift.apps.* are live. We fetch the token pages directly
+  // from the background service worker (credentials: 'include' + host_permissions
+  // gives us those cookies) instead of opening a visible or background tab.
+  //
+  // Flow: GET /oauth/token/request → POST form (CSRF token included) →
+  //       parse "oc login --token=… --server=…" from the response HTML.
+  //       Newer OCP may need a second POST. All happens silently in < 1 second.
   if (msg && msg.type === "copyLoginCommand" && msg.tokenRequestUrl) {
     const sourceTabId = sender.tab && sender.tab.id != null ? sender.tab.id : null;
-    console.log("[oc-pilot:bg] copyLoginCommand received — url:", msg.tokenRequestUrl, "| sourceTabId:", sourceTabId);
+    console.log("[oc-pilot:bg] copyLoginCommand — fetching via background SW | url:", msg.tokenRequestUrl, "| sourceTabId:", sourceTabId);
 
-    chrome.windows.create(
-      { url: msg.tokenRequestUrl, state: "minimized", type: "popup", focused: false, width: 800, height: 600 },
-      (win) => {
-        const tab = win && win.tabs && win.tabs[0];
-        if (!win || !tab || tab.id == null) {
-          console.warn("[oc-pilot:bg] failed to create silent window for:", msg.tokenRequestUrl);
+    _fetchOcLoginCommand(msg.tokenRequestUrl)
+      .then((cmd) => {
+        console.log("[oc-pilot:bg] _fetchOcLoginCommand succeeded | cmd length:", cmd.length);
+        return copyViaOffscreen(cmd).then((ok) => {
+          console.log("[oc-pilot:bg] copyViaOffscreen result:", ok, "| sourceTabId:", sourceTabId);
           if (sourceTabId != null) {
             chrome.tabs.sendMessage(sourceTabId, {
               type: "ocPilotToast",
-              text: "Could not open token-fetch window",
-              style: "error",
-            }).catch(() => {});
+              text: ok ? "Login command copied to clipboard" : "Could not write to clipboard",
+              style: ok ? "success" : "error",
+            }).catch((err) => console.warn("[oc-pilot:bg] sendMessage to source tab failed:", err));
           }
-          return;
-        }
-
-        const silentTabId = tab.id;
-        const silentWinId = win.id;
-        console.log("[oc-pilot:bg] silent window created — winId:", silentWinId, "tabId:", silentTabId);
-
-        // Timeout: if content.js never sends loginCommandReady (e.g. the tab
-        // got stuck on a login page or a selector failed), close it and tell
-        // the user so the button doesn't spin forever.
-        const timer = setTimeout(() => {
-          if (!silentTabSource.has(silentTabId)) return; // already handled
-          console.warn("[oc-pilot:bg] silent window timed out — tabId:", silentTabId);
-          const e = silentTabSource.get(silentTabId);
-          silentTabSource.delete(silentTabId);
-          (e && e.silentWinId != null
-            ? chrome.windows.remove(e.silentWinId)
-            : chrome.tabs.remove(silentTabId)
-          ).catch(() => {});
-          if (sourceTabId != null) {
-            chrome.tabs.sendMessage(sourceTabId, {
-              type: "ocPilotToast",
-              text: "Token fetch timed out — check that your OC Pilot credentials are configured for this cluster",
-              style: "error",
-            }).catch(() => {});
-          }
-          bumpCounter("copylogin.failed");
-        }, SILENT_TAB_TIMEOUT_MS);
-
-        silentTabSource.set(silentTabId, { sourceTabId, timer, silentWinId });
-      }
-    );
-
-    sendResponse({ ok: true });
-    return false;
-  }
-
-  // ── Silent tab: content.js could not extract the command (fast-fail) ────────
-  // Sent immediately when content.js detects it cannot succeed (no credentials
-  // stored, LDAP redirect with no creds, token button not found, etc.) so we
-  // don't make the user wait for the 20 s timeout.
-  if (msg && msg.type === "loginCommandFailed") {
-    const silentTabId = sender.tab && sender.tab.id != null ? sender.tab.id : null;
-    const entry = silentTabId != null ? silentTabSource.get(silentTabId) : null;
-
-    if (entry) {
-      clearTimeout(entry.timer);
-      silentTabSource.delete(silentTabId);
-    }
-    (entry && entry.silentWinId != null
-      ? chrome.windows.remove(entry.silentWinId)
-      : silentTabId != null ? chrome.tabs.remove(silentTabId) : Promise.resolve()
-    ).catch(() => {});
-
-    const sourceTabId = entry ? entry.sourceTabId : null;
-    if (sourceTabId != null) {
-      chrome.tabs.sendMessage(sourceTabId, {
-        type: "ocPilotToast",
-        text: "Could not fetch login command — make sure your OC Pilot credentials are configured for this cluster",
-        style: "error",
-      }).catch(() => {});
-    }
-
-    bumpCounter("copylogin.failed");
-    sendResponse({ ok: true });
-    return false;
-  }
-
-  // ── Silent tab: content.js extracted the oc login command ──────────────────
-  if (msg && msg.type === "loginCommandReady" && typeof msg.text === "string") {
-    const silentTabId = sender.tab && sender.tab.id != null ? sender.tab.id : null;
-    const entry = silentTabId != null ? silentTabSource.get(silentTabId) : null;
-    console.log("[oc-pilot:bg] loginCommandReady — silentTabId:", silentTabId, "| entry found:", !!entry, "| cmd length:", msg.text.length);
-
-    if (entry) {
-      clearTimeout(entry.timer);
-      silentTabSource.delete(silentTabId);
-    }
-    (entry && entry.silentWinId != null
-      ? chrome.windows.remove(entry.silentWinId)
-      : silentTabId != null ? chrome.tabs.remove(silentTabId) : Promise.resolve()
-    ).catch(() => {});
-
-    const sourceTabId = entry ? entry.sourceTabId : null;
-    copyViaOffscreen(msg.text)
-      .then((ok) => {
-        console.log("[oc-pilot:bg] copyViaOffscreen result:", ok, "| sourceTabId:", sourceTabId);
-        if (sourceTabId != null) {
-          chrome.tabs.sendMessage(sourceTabId, {
-            type: "ocPilotToast",
-            text: ok ? "Login command copied to clipboard" : "Could not write to clipboard",
-            style: ok ? "success" : "error",
-          }).catch((err) => console.warn("[oc-pilot:bg] sendMessage to source tab failed:", err));
-        }
-        bumpCounter(ok ? "copylogin.completed" : "copylogin.failed");
+          bumpCounter(ok ? "copylogin.completed" : "copylogin.failed");
+        });
       })
       .catch((err) => {
-        console.warn("[oc-pilot:bg] copyViaOffscreen threw:", err);
+        const errStr = String(err && err.message || err);
+        console.warn("[oc-pilot:bg] _fetchOcLoginCommand failed:", errStr);
+
+        let userMsg;
+        if (errStr === "no-credentials") {
+          userMsg = "Configure your username and password in OC Pilot settings, then try again";
+        } else if (errStr === "auth-failed") {
+          userMsg = "Authentication failed — the stored username or password is incorrect for this cluster";
+        } else if (errStr === "unsupported-provider") {
+          userMsg = "This cluster's identity provider does not support Basic auth (GitHub, OIDC, SAML, etc.) — Copy Login is not supported here";
+        } else if (errStr === "unknown-api-server") {
+          userMsg = "Could not derive the API server URL — non-standard OpenShift install (expected oauth-openshift.apps.<base>)";
+        } else if (/^oauth-/.test(errStr)) {
+          userMsg = "OAuth error: " + errStr.replace("oauth-", "");
+        } else if (/^http-/.test(errStr)) {
+          userMsg = "OAuth server returned " + errStr.replace("http-", "HTTP ") + " — check cluster connectivity";
+        } else {
+          userMsg = "Failed to fetch login command — " + errStr;
+        }
+
         if (sourceTabId != null) {
           chrome.tabs.sendMessage(sourceTabId, {
             type: "ocPilotToast",
-            text: "Could not write to clipboard",
+            text: userMsg,
             style: "error",
           }).catch(() => {});
         }
@@ -555,8 +471,199 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // ── Silent tab diagnostic relay ──────────────────────────────────────────────
+  // content.js sends silentTabLog messages from inside the silent popup window
+  // so all key Copy Login events are visible here even after the tab closes.
+  //
+  // To read these logs:
+  //   chrome://extensions → OC Pilot → "Inspect views: service worker"
+  //   Look for lines starting with [oc-pilot:silent]
+  if (msg && msg.type === 'silentTabLog') {
+    console.log('[oc-pilot:silent]', msg.label || '', msg.data || '');
+    sendResponse({ ok: true });
+    return false;
+  }
+
   return false;
 });
+
+// ── Copy Login: direct background fetch ─────────────────────────────────────
+//
+// Why this approach: the OAuth server's session cookie is SameSite=Lax by
+// default, so it's NOT included in cross-site subresource fetches from the
+// extension SW (host_permissions:<all_urls> does NOT override SameSite).
+// Earlier versions tried fetch('/oauth/token/request', {credentials:'include'})
+// and were silently redirected to the login page despite the user being logged
+// in via the console.
+//
+// What works instead: OpenShift exposes a built-in OAuth client named
+// `openshift-challenging-client` that supports HTTP Basic auth challenges —
+// the same mechanism `oc login --username=... --password=...` uses. We already
+// store the user's credentials, so we authenticate directly, no cookies. The
+// token comes back in the Location header of a 302, which we capture via
+// chrome.webRequest.onBeforeRedirect (the response itself is opaqueredirect —
+// body and headers unreadable, but the webRequest event fires regardless).
+//
+// Compatibility: works with htpasswd / kubeadmin / LDAP / Keystone identity
+// providers. Does NOT work with GitHub / GitLab / Google / OIDC — those need
+// interactive browser flows; we surface 'unsupported-provider' for those.
+//
+// Throws string-coded Error so the message handler can map to a clear toast:
+//   'no-credentials'       — username or password not configured
+//   'auth-failed'          — server rejected credentials (401 or error= in redirect)
+//   'unsupported-provider' — server returned non-401, non-302 (likely OIDC/GitHub)
+//   'unknown-api-server'   — could not derive api.<base>:6443 from the OAuth URL
+//   'http-NNN'             — 5xx or unexpected status
+
+const _CL = "[oc-pilot:bg:copylogin]"; // log prefix — visible in SW console
+
+async function _fetchOcLoginCommand(tokenRequestUrl) {
+  const oauthOrigin = new URL(tokenRequestUrl).origin;
+  const oauthHost   = new URL(tokenRequestUrl).hostname;
+
+  // Reconstruct the console hostname so we can look up any per-cluster
+  // credential override (overrides are keyed by console hostname, per
+  // src/content.js loadConfig()).
+  const consoleHost = oauthHost.replace(
+    /^oauth-openshift\./, "console-openshift-console."
+  );
+
+  const { username, password } = await _getStoredCredentials(consoleHost);
+  if (!username || !password) {
+    console.warn(_CL, "no stored credentials for", consoleHost);
+    throw new Error("no-credentials");
+  }
+
+  console.log(_CL, "requesting token via challenging-client for", oauthOrigin);
+  const token = await _fetchTokenViaChallenge(oauthOrigin, username, password);
+  console.log(_CL, "captured redirect with access_token (length " + token.length + ")");
+
+  const serverUrl = _deriveApiServerUrl(oauthOrigin);
+  if (!serverUrl) {
+    console.warn(_CL, "could not derive API server from", oauthOrigin);
+    throw new Error("unknown-api-server");
+  }
+  console.log(_CL, "derived API server:", serverUrl);
+
+  return "oc login --token=" + token + " --server=" + serverUrl;
+}
+
+/**
+ * Read username/password from chrome.storage.local["openshiftAutoLogin"],
+ * preferring a per-host override if one exists. Mirrors the pattern from
+ * src/content.js loadConfig() so users get the same credential resolution
+ * everywhere in the extension.
+ */
+async function _getStoredCredentials(consoleHost) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get("openshiftAutoLogin", (data) => {
+        const cfg = (data && data.openshiftAutoLogin) || {};
+        const override = cfg.overrides && cfg.overrides[consoleHost];
+        resolve({
+          username: (override && override.username) || cfg.username || "",
+          password: (override && override.password) || cfg.password || "",
+        });
+      });
+    } catch (_) { resolve({ username: "", password: "" }); }
+  });
+}
+
+/**
+ * Drive the openshift-challenging-client flow:
+ *   GET /oauth/authorize?client_id=openshift-challenging-client&response_type=token
+ *   Authorization: Basic <base64(user:pass)>
+ *   X-CSRF-Token: 1
+ *
+ * On success the server responds 302 with the access_token in the Location
+ * fragment. We don't follow the redirect (its target is typically
+ * https://localhost:8443/oauth/token/implicit which is unreachable); instead
+ * we observe it via chrome.webRequest.onBeforeRedirect.
+ *
+ * X-CSRF-Token MUST be set — without it OpenShift returns the HTML login page
+ * (interactive browser flow) instead of issuing a Basic challenge.
+ */
+async function _fetchTokenViaChallenge(oauthOrigin, username, password) {
+  const authorizeUrl =
+    oauthOrigin +
+    "/oauth/authorize?client_id=openshift-challenging-client&response_type=token";
+
+  let capturedRedirect = null;
+  const listener = (details) => {
+    const url = details && details.redirectUrl;
+    if (!url) return;
+    if (url.includes("access_token=") || url.includes("error=")) {
+      capturedRedirect = url;
+    }
+  };
+
+  // The listener filter matches the SOURCE URL of the redirect (the authorize
+  // endpoint), not the target (which is unreachable localhost:8443/...).
+  chrome.webRequest.onBeforeRedirect.addListener(
+    listener,
+    { urls: [oauthOrigin + "/oauth/authorize*"] }
+  );
+
+  let resp = null;
+  try {
+    resp = await fetch(authorizeUrl, {
+      method: "GET",
+      headers: {
+        "Authorization": "Basic " + btoa(username + ":" + password),
+        "X-CSRF-Token": "1",
+      },
+      redirect: "manual",
+    }).catch((err) => {
+      // Opaque-redirect handling sometimes surfaces as a TypeError in the SW
+      // even though the listener already captured the URL. Swallow and check.
+      console.log(_CL, "fetch threw (often benign for opaque redirect):", err && err.message);
+      return null;
+    });
+  } finally {
+    chrome.webRequest.onBeforeRedirect.removeListener(listener);
+  }
+
+  // Did the listener capture an OAuth error in the redirect?
+  if (capturedRedirect) {
+    const errMatch = capturedRedirect.match(/[?#&]error=([^&]+)/);
+    if (errMatch) {
+      const code = decodeURIComponent(errMatch[1]);
+      console.warn(_CL, "OAuth error in redirect:", code);
+      if (code === "access_denied" || code === "invalid_grant") throw new Error("auth-failed");
+      throw new Error("oauth-" + code);
+    }
+    const tokMatch = capturedRedirect.match(/[#&]access_token=([^&]+)/);
+    if (tokMatch) return decodeURIComponent(tokMatch[1]);
+    console.warn(_CL, "captured redirect but no access_token:", capturedRedirect.slice(0, 200));
+  }
+
+  // No redirect captured — look at the response.
+  if (resp) {
+    console.log(_CL, "no redirect captured, response status:", resp.status, "type:", resp.type);
+    if (resp.status === 401) throw new Error("auth-failed");
+    if (resp.status >= 500)  throw new Error("http-" + resp.status);
+    // 200 OK with HTML body almost certainly means the server returned the
+    // interactive login form (Basic challenge not supported by this provider).
+    throw new Error("unsupported-provider");
+  }
+
+  throw new Error("unsupported-provider");
+}
+
+/**
+ * Derive the Kubernetes API server URL from the OAuth origin for standard
+ * OpenShift installs:
+ *   https://oauth-openshift.apps.<base>  ->  https://api.<base>:6443
+ * Returns null if the OAuth hostname doesn't match the expected pattern.
+ */
+function _deriveApiServerUrl(oauthOrigin) {
+  try {
+    const u = new URL(oauthOrigin);
+    const m = u.hostname.match(/^oauth-openshift\.apps\.(.+)$/);
+    if (!m) return null;
+    return "https://api." + m[1] + ":6443";
+  } catch (_) { return null; }
+}
 
 async function copyViaOffscreen(text) {
   await ensureOffscreen();
@@ -634,12 +741,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   _consoleInjectedTabs.delete(tabId);
   pendingLoginTabs.delete(tabId);
-  // If a silent token-fetch tab is closed externally (e.g. user closes it
-  // manually) before it sends loginCommandReady, clean up its registry entry
-  // so silentTabSource doesn't leak. The 20-second timeout will still fire
-  // and show an error toast (timer is stored in the entry, which is now gone,
-  // so the timer guard `if (!silentTabSource.has(silentTabId)) return;` catches it).
-  silentTabSource.delete(tabId);
 });
 
 // ── Post-login notification ──────────────────────────────────────────────────

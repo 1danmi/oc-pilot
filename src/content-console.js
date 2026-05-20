@@ -1390,20 +1390,17 @@
   // ── Copy Login Command header button ─────────────────────────────────────
   //
   // Injects a small "Copy Login" pill into the OCP console's top-right header
-  // area. When clicked it asks the background service worker to open a silent
-  // (inactive) tab at the OAuth token-request URL. content.js runs normally in
-  // that tab, extracts the oc login command, sends it back to the background,
-  // which copies it to the clipboard and closes the silent tab. A toast in
-  // THIS tab confirms success or failure.
+  // area. When clicked it sends the OAuth token-request URL to the background
+  // service worker, which fetches the token pages directly (using the browser's
+  // live session cookies via credentials:'include') without opening any tab,
+  // extracts the oc login command, copies it to the clipboard, and sends a
+  // toast back to this tab confirming success or failure.
 
   function getTokenRequestUrl() {
     // Console hostname:  console-openshift-console.apps.<domain>
     // OAuth hostname:    oauth-openshift.apps.<domain>
-    // ?oc-pilot-silent=1 tells content.js to skip the progress banner and send
-    // the extracted command back to the background instead of writing to clipboard
-    // (background tabs don't have user activation for clipboard writes).
     const h = location.hostname.replace(/^console-openshift-console\./, 'oauth-openshift.');
-    return `https://${h}/oauth/token/request?oc-pilot-silent=1`;
+    return `https://${h}/oauth/token/request`;
   }
 
   function injectCopyLoginButton() {
@@ -1486,7 +1483,11 @@
       } catch (err) {
         console.warn(LOG, '[CopyLogin] sendMessage exception:', err);
         resetCopyLoginButton();
-        showConsoleToast('Failed to start token fetch', 'error');
+        const isStale = /context invalidated/i.test((err && err.message) || '');
+        showConsoleToast(
+          isStale ? 'Extension updated — please refresh the page' : 'Failed to start token fetch',
+          'error'
+        );
       }
 
       // Safety-net reset in case the background never responds (e.g. network timeout).

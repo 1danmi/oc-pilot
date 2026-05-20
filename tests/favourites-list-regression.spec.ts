@@ -121,11 +121,12 @@ test.describe('Favourites — regression scenarios', () => {
   // its _positionFromTop. When our pinned section grows above the virtualizer,
   // WindowScroller must re-measure AND resync state.scrollTop — otherwise it
   // keeps rendering rows at stale offsets and a phantom blank area grows above
-  // the table. Fixed in 0.25.8 via a MAIN-world content script (world: "MAIN"
-  // in manifest.json) that calls inst.updatePosition() to force a fresh
-  // _positionFromTop measurement after each star click, then directly invokes
-  // __handleWindowScrollEvent() so state.scrollTop = scrollElement.scrollTop
-  // − updated_positionFromTop (drift verified ≤ 0 px in live testing).
+  // the table. Fix history: 0.25.8 introduced the MAIN-world content script
+  // (world: "MAIN") that calls updatePosition() and __handleWindowScrollEvent();
+  // 0.25.9 added the pinnedHeight guard (skip updatePosition when unchanged,
+  // preventing per-scroll-frame interference); 0.25.10 added the scrollTop > 0
+  // guard (__handleWindowScrollEvent skipped when not scrolled to avoid the
+  // isScrolling side-effect making stars unclickable).
   test('scroll-down → star multiple → no phantom blank space above the table', async ({
     extPage,
   }) => {
@@ -400,5 +401,173 @@ test.describe('Favourites — regression scenarios', () => {
     // Alphabetical: 'downloads' < 'zzz-test'
     expect(names[0]).toBe(RESOURCE);
     expect(names[1]).toBe('zzz-test');
+  });
+
+  // ── Regression: 0.25.9 (blank space while scrolling with a pinned section) ──
+  // The isolated-world MutationObserver watches document.documentElement with
+  // subtree:true, so every ReactVirtualized row re-render during a normal scroll
+  // fires MutationObserver → scheduleInject → injectPinnedSection →
+  // _scheduleRvResize → oc-pilot:rv-sync. In 0.25.8 the MAIN-world handler
+  // always called updatePosition() on that event, re-measuring _positionFromTop
+  // mid-scroll. Our setter then called __handleWindowScrollEvent() via
+  // setTimeout(0), but by that point the scroll had advanced — state.scrollTop
+  // became stale and a phantom blank space appeared just from scrolling, even
+  // without starring anything new. Fixed by passing pinnedHeight in the event
+  // detail and skipping updatePosition() when the height is unchanged.
+  test('scroll with already-starred items → no phantom blank space', async ({
+    extPage,
+  }) => {
+    await extPage.goto('/k8s/all-namespaces/deployments');
+    await extPage.waitForSelector(
+      'tr a[href*="/deployments/"], [role="row"] a[href*="/deployments/"]',
+      { timeout: 30_000 }
+    );
+    await expect(extPage.locator('.oc-pilot-star-wrap').first()).toBeVisible({
+      timeout: 20_000,
+    });
+
+    // Star 2 deployments BEFORE scrolling — pinned section is in place above
+    // the virtualizer when we subsequently scroll. Capture paths upfront so the
+    // second click cannot accidentally un-star the same row.
+    const starPaths = await extPage.evaluate(() => {
+      const wraps = document.querySelectorAll(
+        'tr:not(#oc-pilot-pinned-table-wrapper tr) .oc-pilot-star-wrap[data-star-path], ' +
+          '[role="row"]:not(#oc-pilot-pinned-table-wrapper [role="row"]) .oc-pilot-star-wrap[data-star-path]'
+      );
+      return Array.from(wraps)
+        .slice(0, 2)
+        .map((w) => (w as HTMLElement).getAttribute('data-star-path')!)
+        .filter(Boolean);
+    });
+    expect(starPaths.length).toBe(2);
+
+    for (const path of starPaths) {
+      const star = extPage
+        .locator(
+          `tr:not(#oc-pilot-pinned-table-wrapper tr) .oc-pilot-star-wrap[data-star-path="${path}"], ` +
+            `[role="row"]:not(#oc-pilot-pinned-table-wrapper [role="row"]) .oc-pilot-star-wrap[data-star-path="${path}"]`
+        )
+        .first();
+      await star.click();
+      await extPage.waitForTimeout(300);
+    }
+
+    await expect(extPage.locator('#oc-pilot-pinned-table-wrapper')).toBeVisible({
+      timeout: 5_000,
+    });
+
+    // Now scroll — this is the trigger. Each row re-render during scroll fires
+    // the MutationObserver chain. With the bug, updatePosition() runs on every
+    // frame and corrupts state.scrollTop → blank space. With the fix, the event
+    // carries pinnedHeight and is a no-op when it hasn't changed.
+    await extPage.evaluate(() => window.scrollBy(0, 600));
+    await extPage.waitForTimeout(600); // Let scroll settle and all rAFs fire.
+
+    const layout = await extPage.evaluate(() => {
+      const w = document.getElementById('oc-pilot-pinned-table-wrapper');
+      const firstMainRow = document.querySelector(
+        'tr:not(#oc-pilot-pinned-table-wrapper tr):has(.oc-pilot-star-wrap), ' +
+          '[role="row"]:not(#oc-pilot-pinned-table-wrapper [role="row"]):has(.oc-pilot-star-wrap)'
+      ) as HTMLElement | null;
+      if (!w || !firstMainRow) return null;
+      const wRect = w.getBoundingClientRect();
+      const rRect = firstMainRow.getBoundingClientRect();
+      return { pinnedHeight: wRect.height, gap: rRect.top - wRect.bottom };
+    });
+
+    expect(layout).not.toBeNull();
+    expect(layout!.pinnedHeight).toBeGreaterThan(50);
+    // The regression produces gaps of 200–500 px. A correct render should show
+    // only table-header / padding between the pinned section and first main row.
+    expect(layout!.gap).toBeLessThan(80);
+  });
+
+  // ── Regression: 0.25.10 (stars unclickable after un-starring without scroll) ─
+  // After an un-star, injectPinnedSection → _scheduleRvResize → oc-pilot:rv-sync
+  // → updatePosition() changed _positionFromTop → our Object.defineProperty setter
+  // called __handleWindowScrollEvent() via setTimeout(0). That function sets
+  // ReactVirtualized's isScrolling: true, which triggers a React re-render and a
+  // ~150 ms DOM-update window during which clicks on main-list star buttons were
+  // silently dropped. Fixed by guarding both the setter and refreshScrollState()
+  // with scrollTop > 0 — when not scrolled, __handleWindowScrollEvent() is never
+  // called, isScrolling stays false, and clicks always land.
+  test('un-starring without scrolling → subsequent main-list star click is received', async ({
+    extPage,
+  }) => {
+    await extPage.goto('/k8s/all-namespaces/deployments');
+    await extPage.waitForSelector(
+      'tr a[href*="/deployments/"], [role="row"] a[href*="/deployments/"]',
+      { timeout: 30_000 }
+    );
+    await expect(extPage.locator('.oc-pilot-star-wrap').first()).toBeVisible({
+      timeout: 20_000,
+    });
+
+    // Capture 3 star paths upfront:
+    //   [0] and [1] → starred to build the pinned section
+    //   [0]         → un-starred from the pinned section (triggers the bug window)
+    //   [2]         → starred immediately after, to verify the click lands
+    const starPaths = await extPage.evaluate(() => {
+      const wraps = document.querySelectorAll(
+        'tr:not(#oc-pilot-pinned-table-wrapper tr) .oc-pilot-star-wrap[data-star-path], ' +
+          '[role="row"]:not(#oc-pilot-pinned-table-wrapper [role="row"]) .oc-pilot-star-wrap[data-star-path]'
+      );
+      return Array.from(wraps)
+        .slice(0, 3)
+        .map((w) => (w as HTMLElement).getAttribute('data-star-path')!)
+        .filter(Boolean);
+    });
+    expect(starPaths.length).toBe(3);
+
+    // Star [0] and [1] without scrolling.
+    for (const path of starPaths.slice(0, 2)) {
+      const star = extPage
+        .locator(
+          `tr:not(#oc-pilot-pinned-table-wrapper tr) .oc-pilot-star-wrap[data-star-path="${path}"], ` +
+            `[role="row"]:not(#oc-pilot-pinned-table-wrapper [role="row"]) .oc-pilot-star-wrap[data-star-path="${path}"]`
+        )
+        .first();
+      await star.click();
+      await extPage.waitForTimeout(300);
+    }
+
+    await expect(extPage.locator('#oc-pilot-pinned-table-wrapper')).toBeVisible({
+      timeout: 5_000,
+    });
+
+    // Un-star [0] from the PINNED section (not scrolled). This triggers the
+    // _scheduleRvResize → rAF (~16 ms) → updatePosition() → _positionFromTop
+    // setter → setTimeout(0) → (bug) __handleWindowScrollEvent() opening a
+    // ~150 ms window where main-list star clicks are swallowed.
+    const firstPinnedStar = extPage
+      .locator(
+        `#oc-pilot-pinned-table-wrapper .oc-pilot-star-wrap[data-star-path="${starPaths[0]}"]`
+      )
+      .first();
+    await expect(firstPinnedStar).toBeVisible();
+    await firstPinnedStar.click();
+
+    // 30 ms: enough for the rAF + setTimeout(0) to have fired (the bug window
+    // is now open), but well within the ~150 ms isScrolling debounce.
+    // With the fix the scrollTop > 0 guard prevents __handleWindowScrollEvent()
+    // from being called at all, so the window never opens.
+    await extPage.waitForTimeout(30);
+
+    // Click [2]'s star in the MAIN list while inside the bug window.
+    // If pointer-events or the React re-render swallows the click, [2] will not
+    // appear in the pinned section and the expect below times out.
+    const thirdStar = extPage
+      .locator(
+        `tr:not(#oc-pilot-pinned-table-wrapper tr) .oc-pilot-star-wrap[data-star-path="${starPaths[2]}"], ` +
+          `[role="row"]:not(#oc-pilot-pinned-table-wrapper [role="row"]) .oc-pilot-star-wrap[data-star-path="${starPaths[2]}"]`
+      )
+      .first();
+    await thirdStar.scrollIntoViewIfNeeded();
+    await thirdStar.click();
+
+    // The click must have landed — [2] should now be pinned.
+    await expect(
+      extPage.locator(`#oc-pilot-pinned-table-wrapper a[href$="${starPaths[2]}"]`)
+    ).toBeVisible({ timeout: 3_000 });
   });
 });
