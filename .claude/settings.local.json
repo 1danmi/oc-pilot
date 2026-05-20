@@ -56,7 +56,13 @@
       "PowerShell(Get-ChildItem \"C:\\\\Users\\\\danielm\\\\\" -Recurse -Filter \"package.json\" -Depth 3 -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch \"node_modules|AppData\" } | Select-Object FullName | Select-Object -First 20)",
       "PowerShell($docs = [Environment]::GetFolderPath\\('MyDocuments'\\); Get-ChildItem $docs -Depth 1 -ErrorAction SilentlyContinue | Format-Table Name, LastWriteTime -AutoSize | Select-Object -First 30)",
       "Bash(git -C \"/c/Users/danielm/Desktop/Claude Code/oc-pilot\" add .claude/settings.local.json CHANGELOG.md src/background.js src/content-console.js src/content.js src/manifest.json tests/TEST-PLAN.md tests/favourites-list-regression.spec.ts)",
-      "Bash(git -C '/c/Users/danielm/Desktop/Claude Code/oc-pilot' commit -m ' *)"
+      "Bash(git -C '/c/Users/danielm/Desktop/Claude Code/oc-pilot' commit -m ' *)",
+      "Bash(git -C \"/c/Users/danielm/Desktop/Claude Code/oc-pilot\" push)",
+      "Bash(rm -f telemetry-config.json)",
+      "Bash(powershell -NoProfile -Command \"& ./pack.ps1\")",
+      "Bash(node -e ' *)",
+      "Bash(unzip -p \"build/.verify-inner.zip\" background.js)",
+      "Bash(git -C \"/c/Users/danielm/Desktop/Claude Code/oc-pilot\" add .claude/settings.local.json .gitignore CHANGELOG.md pack.ps1 src/background.js src/manifest.json telemetry-config.example.json)"
     ]
   },
   "hooks": {

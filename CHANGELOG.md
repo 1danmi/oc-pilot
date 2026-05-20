@@ -1,5 +1,35 @@
 # OC Pilot — Changelog
 
+## [0.25.17] — 2026-05-20
+
+### Build: telemetry URL+token now injected from gitignored `telemetry-config.json`
+
+`DEFAULT_TELEMETRY_URL` and `DEFAULT_TELEMETRY_TOKEN` in `src/background.js`
+were getting overwritten on every code change because the real values can't
+be checked into the repo. They are now build-time placeholders
+(`__OC_PILOT_TELEMETRY_URL__` / `__OC_PILOT_TELEMETRY_TOKEN__`) that
+`pack.ps1` substitutes from a new `telemetry-config.json` file at the repo
+root.
+
+`telemetry-config.json` is `.gitignore`d and is NOT bundled into the CRX —
+`pack.ps1` stages `src/` to a temp directory, does the substitution there,
+then zips and signs from the staged copy. The working tree is never
+modified by the build. A `telemetry-config.example.json` is checked in to
+document the schema.
+
+If the file is missing or its values are empty, the placeholders remain in
+the bundled `background.js`. At SW startup the runtime detects this and:
+- Writes one log line: `[oc-pilot:telemetry] disabled — no build-time config (telemetry-config.json missing at pack time). Configure URL+token via the popup's tab-mode Diagnostics section to enable on this machine.`
+- Returns early from `sendTelemetry()` — no network attempt
+- Returns an empty URL from `telemetry/getConfig` so the popup UI doesn't show placeholder text
+
+Per-install overrides (`openshiftAutoLogin.telemetry.serverUrl` /
+`serverToken` set via the popup's tab-mode Diagnostics section) still work
+and re-enable telemetry on a single machine even when the build's defaults
+are placeholder.
+
+---
+
 ## [0.25.16] — 2026-05-20
 
 ### Redesign: Copy Login — openshift-challenging-client Basic-auth flow

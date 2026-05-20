@@ -14,18 +14,46 @@ const pendingLoginTabs = new Map(); // tabId → { username, ts }
 // {eventName: count} map. What's NEVER collected: cluster URLs, resource names,
 // the actual username, or IPs.
 //
-// Edit the two DEFAULT_* constants below before `pack.ps1`. Both can also be
-// overridden per install via the Diagnostics section in tab-mode settings
-// (openshiftAutoLogin.telemetry.serverUrl / serverToken).
+// The DEFAULT_* placeholders below are substituted at pack time from
+// `telemetry-config.json` at the repo root (see pack.ps1). The config file is
+// .gitignored and NOT bundled into the CRX — only its values are inlined.
+// If the file is missing or empty, the placeholders remain, telemetry is
+// disabled (no sends, no alarm activity), and a single log line is emitted
+// at SW startup. Per-install overrides via the Diagnostics section in
+// tab-mode settings (openshiftAutoLogin.telemetry.serverUrl / serverToken)
+// still work and re-enable telemetry on a single machine.
 //
 // All telemetry code is wrapped in try/catch so failures only show up in
 // console.warn — they MUST NEVER break the extension's normal features.
 
-const DEFAULT_TELEMETRY_URL   = "http://localhost:8080/v1/telemetry";
-const DEFAULT_TELEMETRY_TOKEN = "56b6cfd20add569ce0b0c18cb01f91d2dfafec37af5f651ca9a1a439feed123d";
+const DEFAULT_TELEMETRY_URL   = "__OC_PILOT_TELEMETRY_URL__";
+const DEFAULT_TELEMETRY_TOKEN = "__OC_PILOT_TELEMETRY_TOKEN__";
 const TELEMETRY_PERIOD_HOURS  = 1;
 const TELEMETRY_ALARM_NAME    = "oc-pilot-telemetry";
 const TELEMETRY_LOG           = "[oc-pilot:telemetry]";
+
+/**
+ * Returns true when a URL/token pair is "real" — non-empty and not still the
+ * build-time placeholder. Used to gate both default-only sends and the
+ * effective URL/token after user overrides are applied.
+ */
+function _telemetryValuesAreReal(url, token) {
+  return !!url && !!token &&
+         !url.startsWith("__OC_PILOT_") &&
+         !token.startsWith("__OC_PILOT_");
+}
+
+// One-shot startup log when the build was packed without telemetry config.
+// The SW console clears between SW lifetimes, so this fires once per wake-up.
+const _TELEMETRY_DEFAULTS_REAL =
+  _telemetryValuesAreReal(DEFAULT_TELEMETRY_URL, DEFAULT_TELEMETRY_TOKEN);
+if (!_TELEMETRY_DEFAULTS_REAL) {
+  console.log(
+    TELEMETRY_LOG,
+    "disabled — no build-time config (telemetry-config.json missing at pack time). " +
+    "Configure URL+token via the popup's tab-mode Diagnostics section to enable on this machine."
+  );
+}
 
 /**
  * Atomically increment counters[event] in chrome.storage.local.
@@ -136,6 +164,12 @@ async function sendTelemetry(opts) {
 
     const url   = (tel.serverUrl   && String(tel.serverUrl).trim())   || DEFAULT_TELEMETRY_URL;
     const token = (tel.serverToken && String(tel.serverToken).trim()) || DEFAULT_TELEMETRY_TOKEN;
+
+    // Disabled if the build had no telemetry config AND the user hasn't
+    // overridden URL/token via the popup. Bail before any network attempt.
+    if (!_telemetryValuesAreReal(url, token)) {
+      return { ok: false, error: "telemetry not configured" };
+    }
 
     const body = {
       machineId,
@@ -427,12 +461,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const intervalMinutes = await _getTelemetryIntervalMinutes();
         const alarm = await chrome.alarms.get(TELEMETRY_ALARM_NAME);
         sendResponse({
-          url:             DEFAULT_TELEMETRY_URL,
+          // Show empty when the build has no real config — keeps the popup
+          // UI clean instead of displaying "__OC_PILOT_TELEMETRY_URL__".
+          url:             _TELEMETRY_DEFAULTS_REAL ? DEFAULT_TELEMETRY_URL : "",
           intervalMinutes: intervalMinutes,
           nextFire:        alarm ? alarm.scheduledTime : null,
         });
       } catch (err) {
-        sendResponse({ url: DEFAULT_TELEMETRY_URL, intervalMinutes: TELEMETRY_PERIOD_HOURS * 60, nextFire: null });
+        sendResponse({
+          url:             _TELEMETRY_DEFAULTS_REAL ? DEFAULT_TELEMETRY_URL : "",
+          intervalMinutes: TELEMETRY_PERIOD_HOURS * 60,
+          nextFire:        null,
+        });
       }
     })();
     return true;
