@@ -11,6 +11,10 @@
   document.documentElement.dataset.ocPilotConsoleLoaded = '1';
 
   const LOG = '[oc-pilot:console]';
+  // Debug logger — uses console.debug so output is hidden by default in the
+  // page's DevTools (requires "Verbose" level). Keeps the user's console clean
+  // while remaining accessible for extension developers.
+  const _dbg = console.debug.bind(console, LOG);
 
   // ── Feature flags (loaded from storage, default all on) ───────────────────
   // Each flag controls an independent feature. The settings page (full tab)
@@ -26,6 +30,7 @@
     copyLoginCmd: true,   // "Copy Login" button in the console header
     clickToCopy:  true,   // click any resource title to copy its name
     favourites:   true,   // star resources to pin them at the top of list pages
+    persistSort:  true,   // remember column sort selection across navigations
   };
 
   // ── Telemetry helper ───────────────────────────────────────────────────────
@@ -50,6 +55,9 @@
           copyLoginCmd: f.copyLoginCmd !== false,
           clickToCopy:  f.clickToCopy  !== false,
           favourites:   f.favourites   !== false,
+          persistSort:  f.persistSort  !== false,
+          copyLoginTimeoutSec: (typeof f.copyLoginTimeoutSec === 'number' && f.copyLoginTimeoutSec > 0)
+            ? f.copyLoginTimeoutSec : 45,
         };
         if (callback) callback();
       });
@@ -76,6 +84,9 @@
           copyLoginCmd: f.copyLoginCmd !== false,
           clickToCopy:  f.clickToCopy  !== false,
           favourites:   f.favourites   !== false,
+          persistSort:  f.persistSort  !== false,
+          copyLoginTimeoutSec: (typeof f.copyLoginTimeoutSec === 'number' && f.copyLoginTimeoutSec > 0)
+            ? f.copyLoginTimeoutSec : 45,
         };
         // Skip onNavigate if only telemetry counters changed. bumpCounter writes
         // openshiftAutoLogin.telemetry.counters on every user action; reacting
@@ -130,6 +141,9 @@
         const map = (changes.ocPilotClusterColours.newValue) || {};
         _clusterColour = map[location.hostname] || null;
         applyToolbarColour();
+      }
+      if (changes.ocPilotSortPrefs) {
+        _sortPrefs = changes.ocPilotSortPrefs.newValue || {};
       }
     });
   } catch (_) {}
@@ -233,14 +247,14 @@
     );
     if (!ok) return;
 
-    console.log(LOG, `force-deleting ${namespace}/${podName}`);
+    _dbg(`force-deleting ${namespace}/${podName}`);
     try {
       await kDelete(
         `/api/kubernetes/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}`,
         { gracePeriodSeconds: 0 }
       );
       showConsoleToast(`Force-deleted pod "${podName}"`, 'success');
-      console.log(LOG, `✓ force-deleted ${namespace}/${podName}`);
+      _dbg(`✓ force-deleted ${namespace}/${podName}`);
 
       // If we're currently ON the pod's detail page, it's about to 404.
       // Bounce to the pods list after a short delay so the toast is visible.
@@ -326,15 +340,15 @@
   }
 
   async function resolveOwner(namespace, podName) {
-    console.log(LOG, `fetching pod ${namespace}/${podName}`);
+    _dbg(`fetching pod ${namespace}/${podName}`);
     const pod = await kFetch(
       `/api/kubernetes/api/v1/namespaces/${namespace}/pods/${encodeURIComponent(podName)}`
     );
     const refs = pod.metadata?.ownerReferences;
-    if (!refs?.length) { console.log(LOG, 'pod has no ownerReferences'); return null; }
+    if (!refs?.length) { _dbg('pod has no ownerReferences'); return null; }
 
     const { kind, name } = refs[0];
-    console.log(LOG, `direct owner: ${kind}/${name}`);
+    _dbg(`direct owner: ${kind}/${name}`);
 
     if (!INTERMEDIATE_API[kind]) {
       // Top-level owner (StatefulSet, DaemonSet, Deployment if created directly, etc.)
@@ -347,7 +361,7 @@
       const parentRefs = parent.metadata?.ownerReferences;
       if (parentRefs?.length && KIND_PATH[parentRefs[0].kind]) {
         const top = parentRefs[0];
-        console.log(LOG, `resolved owner: ${top.kind}/${top.name}`);
+        _dbg(`resolved owner: ${top.kind}/${top.name}`);
         return { kind: top.kind, name: top.name, namespace };
       }
     } catch (e) {
@@ -371,13 +385,13 @@
   // Route → Service → Deployment/DeploymentConfig.
   // Returns { kind, name, namespace } or null.
   async function resolveRouteBackend(namespace, routeName) {
-    console.log(LOG, `fetching route ${namespace}/${routeName}`);
+    _dbg(`fetching route ${namespace}/${routeName}`);
     const route = await kFetch(
       `/api/kubernetes/apis/route.openshift.io/v1/namespaces/${namespace}/routes/${encodeURIComponent(routeName)}`
     );
     const to = route.spec?.to;
     if (!to || to.kind !== 'Service' || !to.name) {
-      console.log(LOG, 'route.spec.to is not a Service; nothing to link to');
+      _dbg('route.spec.to is not a Service; nothing to link to');
       return null;
     }
 
@@ -388,7 +402,7 @@
 
     const selector = svc.spec?.selector;
     if (!selector || !Object.keys(selector).length) {
-      console.log(LOG, `service ${to.name} has no selector (headless / ExternalName); no workload link`);
+      _dbg(`service ${to.name} has no selector (headless / ExternalName); no workload link`);
       return null;
     }
 
@@ -405,30 +419,30 @@
 
     const dep = (deps.items || []).find(matchItem);
     if (dep) {
-      console.log(LOG, `route → Deployment/${dep.metadata.name}`);
+      _dbg(`route → Deployment/${dep.metadata.name}`);
       return { kind: 'Deployment', name: dep.metadata.name, namespace };
     }
     const dc = (dcs.items || []).find(matchItem);
     if (dc) {
-      console.log(LOG, `route → DeploymentConfig/${dc.metadata.name}`);
+      _dbg(`route → DeploymentConfig/${dc.metadata.name}`);
       return { kind: 'DeploymentConfig', name: dc.metadata.name, namespace };
     }
 
-    console.log(LOG, `no Deployment/DC matches service ${to.name} selector`);
+    _dbg(`no Deployment/DC matches service ${to.name} selector`);
     return null;
   }
 
   // Deployment → Services (label-matching) → Routes (spec.to.name match).
   // Returns array of { name, host, tls, namespace } (may be empty).
   async function resolveDeploymentRoutes(namespace, kindPath, name) {
-    console.log(LOG, `fetching ${kindPath}/${name} in ${namespace}`);
+    _dbg(`fetching ${kindPath}/${name} in ${namespace}`);
     const apiGroup = kindPath === 'deploymentconfigs' ? 'apps.openshift.io/v1' : 'apps/v1';
     const dep = await kFetch(
       `/api/kubernetes/apis/${apiGroup}/namespaces/${namespace}/${kindPath}/${encodeURIComponent(name)}`
     );
     const podLabels = dep.spec?.template?.metadata?.labels || {};
     if (!Object.keys(podLabels).length) {
-      console.log(LOG, 'deployment has no pod-template labels; cannot map to services');
+      _dbg('deployment has no pod-template labels; cannot map to services');
       return [];
     }
 
@@ -440,7 +454,7 @@
         .map((s) => s.metadata.name)
     );
     if (!matchingSvcNames.size) {
-      console.log(LOG, 'no services target this deployment');
+      _dbg('no services target this deployment');
       return [];
     }
 
@@ -457,7 +471,7 @@
         namespace,
       }));
 
-    console.log(LOG, `found ${routes.length} route(s) for ${kindPath}/${name}`);
+    _dbg(`found ${routes.length} route(s) for ${kindPath}/${name}`);
     return routes;
   }
 
@@ -472,7 +486,7 @@
     ]) {
       const el = Array.from(document.querySelectorAll(sel))
         .find(el => el.textContent.trim() === resourceName);
-      if (el) { console.log(LOG, `anchor via "${sel}"`); return { el, mode: 'after' }; }
+      if (el) { _dbg(`anchor via "${sel}"`); return { el, mode: 'after' }; }
     }
 
     // Strategy 2: the co-resource-item container (wraps icon + name)
@@ -482,8 +496,8 @@
       // Try to find a leaf text element inside it
       const leaf = Array.from(resourceItem.querySelectorAll('span, a'))
         .find(el => !el.children.length && el.textContent.trim() === resourceName);
-      if (leaf) { console.log(LOG, 'anchor via .co-resource-item > leaf'); return { el: leaf, mode: 'after' }; }
-      console.log(LOG, 'anchor via .co-resource-item');
+      if (leaf) { _dbg('anchor via .co-resource-item > leaf'); return { el: leaf, mode: 'after' }; }
+      _dbg('anchor via .co-resource-item');
       return { el: resourceItem, mode: 'after' };
     }
 
@@ -494,8 +508,8 @@
       // Prefer a leaf child that is exactly the resource name
       const leaf = Array.from(h1.querySelectorAll('span, a'))
         .find(el => !el.children.length && el.textContent.trim() === resourceName);
-      if (leaf) { console.log(LOG, 'anchor via h1 > leaf span'); return { el: leaf, mode: 'after' }; }
-      console.log(LOG, 'anchor via h1 (append)');
+      if (leaf) { _dbg('anchor via h1 > leaf span'); return { el: leaf, mode: 'after' }; }
+      _dbg('anchor via h1 (append)');
       return { el: h1, mode: 'append' };
     }
 
@@ -504,7 +518,7 @@
     for (const tag of ['h2', 'h3', '[class*="heading"]', '[class*="title"]']) {
       const el = Array.from(document.querySelectorAll(tag))
         .find(el => el.textContent.trim() === resourceName);
-      if (el) { console.log(LOG, `anchor via "${tag}"`); return { el, mode: 'after' }; }
+      if (el) { _dbg(`anchor via "${tag}"`); return { el, mode: 'after' }; }
     }
 
     return null;
@@ -674,12 +688,12 @@
     try {
       const owner = await resolveOwner(namespace, podName);
       loadingEl.remove();
-      if (!owner) { console.log(LOG, 'no linkable owner found'); return; }
+      if (!owner) { _dbg('no linkable owner found'); return; }
       if (document.getElementById('oc-pilot-owner-btn')) return; // already there
       const btn = buildButton(owner);
       if (anchor.mode === 'after') anchor.el.insertAdjacentElement('afterend', btn);
       else anchor.el.appendChild(btn);
-      console.log(LOG, `✓ injected button → ${owner.kind}/${owner.name}`);
+      _dbg(`✓ injected button → ${owner.kind}/${owner.name}`);
     } catch (err) {
       loadingEl.remove();
       console.warn(LOG, 'owner lookup failed:', err.message);
@@ -741,7 +755,7 @@
 
     lastForceKey = key;
     stopForcePoll();
-    console.log(LOG, `✓ injected force-delete button for ${namespace}/${podName}`);
+    _dbg(`✓ injected force-delete button for ${namespace}/${podName}`);
   }
 
   function startForcePoll() {
@@ -837,7 +851,7 @@
 
     try {
       const backend = await resolveRouteBackend(namespace, routeName);
-      if (!backend) { console.log(LOG, 'no backend workload for route'); return; }
+      if (!backend) { _dbg('no backend workload for route'); return; }
       if (document.getElementById('oc-pilot-route-backend-btn')) return;
       const btn = buildLinkButton({
         id: 'oc-pilot-route-backend-btn',
@@ -850,7 +864,7 @@
       btn.addEventListener('click', () => bumpEvent('click.crossLinks.routeToBackend'));
       if (anchor.mode === 'after') anchor.el.insertAdjacentElement('afterend', btn);
       else anchor.el.appendChild(btn);
-      console.log(LOG, `✓ injected route-backend button → ${backend.kind}/${backend.name}`);
+      _dbg(`✓ injected route-backend button → ${backend.kind}/${backend.name}`);
     } catch (err) {
       console.warn(LOG, 'route backend lookup failed:', err.message);
       lastRouteKey = ''; // allow retry
@@ -894,7 +908,7 @@
 
     try {
       const routes = await resolveDeploymentRoutes(namespace, kindPath, name);
-      if (!routes.length) { console.log(LOG, 'no routes found'); return; }
+      if (!routes.length) { _dbg('no routes found'); return; }
       // Dedupe: if some of these routes are already injected, skip them.
       const existing = new Set(
         Array.from(document.querySelectorAll('[data-oc-pilot-route]'))
@@ -932,7 +946,7 @@
 
         addedCount++;
       });
-      console.log(LOG, `✓ injected ${addedCount} route link(s) on ${kind} page`);
+      _dbg(`✓ injected ${addedCount} route link(s) on ${kind} page`);
 
       // Cache routes so the details-panel injector can use the same data
       // without a second API call (it runs separately once the details DOM renders).
@@ -1019,7 +1033,7 @@
       if (psGroup) {
         const prevGroup = psGroup.previousElementSibling;
         if (prevGroup) {
-          console.log(LOG, 'route-details: anchoring before Pod selector (Strategy A2)');
+          _dbg('route-details: anchoring before Pod selector (Strategy A2)');
           return { type: 'group', afterEl: prevGroup };
         }
       }
@@ -1029,7 +1043,7 @@
       const prevDt = (prevDd?.previousElementSibling?.tagName === 'DT')
         ? prevDd.previousElementSibling : null;
       if (prevDd) {
-        console.log(LOG, 'route-details: anchoring before Pod selector (Strategy A2 flat)');
+        _dbg('route-details: anchoring before Pod selector (Strategy A2 flat)');
         return { type: 'flat', dtEl: prevDt, afterEl: prevDd };
       }
     }
@@ -1052,7 +1066,7 @@
         (el) => el.className && el.className.includes('description-list__group')
       );
       if (topGroups.length) {
-        console.log(LOG, 'route-details: Labels dt not found, appending after last group (Strategy B)');
+        _dbg('route-details: Labels dt not found, appending after last group (Strategy B)');
         return { type: 'group', afterEl: topGroups[topGroups.length - 1] };
       }
 
@@ -1062,15 +1076,14 @@
       const lastDd   = topDds[topDds.length - 1];
       const lastDt   = topDtEls[topDtEls.length - 1] || null;
       if (lastDd) {
-        console.log(LOG, 'route-details: Labels dt not found, appending after last dd (Strategy B)');
+        _dbg('route-details: Labels dt not found, appending after last dd (Strategy B)');
         return { type: 'flat', dtEl: lastDt, afterEl: lastDd };
       }
     }
 
     // Diagnostic: nothing found — log what dt texts ARE on the page so the user
     // can share them to help us refine the selector.
-    console.log(
-      LOG,
+    _dbg(
       'route-details: Labels anchor not found. dt primary texts on page:',
       dts.map(termText).filter(Boolean).slice(0, 20)
     );
@@ -1234,7 +1247,7 @@
       anchor.afterEl.insertAdjacentElement('afterend', newDt);
     }
 
-    console.log(LOG, `✓ injected route details for ${routes.length} route(s) in details panel`);
+    _dbg(`✓ injected route details for ${routes.length} route(s) in details panel`);
   }
 
   function clearCrossLinks() {
@@ -1368,7 +1381,7 @@
       }
     });
 
-    console.log(LOG, `✓ click-to-copy attached to "${name}"`);
+    _dbg(`✓ click-to-copy attached to "${name}"`);
   }
 
   function startCopyNamePoll() {
@@ -1469,7 +1482,7 @@
       btn.style.cursor  = 'default';
 
       const tokenRequestUrl = getTokenRequestUrl();
-      console.log(LOG, '[CopyLogin] click — tokenRequestUrl:', tokenRequestUrl);
+      _dbg('[CopyLogin] click — tokenRequestUrl:', tokenRequestUrl);
       try {
         chrome.runtime.sendMessage({ type: 'copyLoginCommand', tokenRequestUrl }, (resp) => {
           if (chrome.runtime.lastError) {
@@ -1478,7 +1491,7 @@
             showConsoleToast('Failed to start token fetch', 'error');
             return;
           }
-          console.log(LOG, '[CopyLogin] background ack:', resp);
+          _dbg('[CopyLogin] background ack:', resp);
         });
       } catch (err) {
         console.warn(LOG, '[CopyLogin] sendMessage exception:', err);
@@ -1490,8 +1503,13 @@
         );
       }
 
-      // Safety-net reset in case the background never responds (e.g. network timeout).
-      setTimeout(resetCopyLoginButton, 10000);
+      // Safety-net reset if the background never responds (e.g. cluster throttling).
+      // Default 45 s; configurable via OC Pilot settings → Copy Login timeout.
+      const _clTimeout = (FEATURES.copyLoginTimeoutSec || 45) * 1000;
+      setTimeout(() => {
+        resetCopyLoginButton();
+        showConsoleToast('Timeout — wait a moment and try again', 'error');
+      }, _clTimeout);
     });
 
     // Place the button immediately to the LEFT of the user dropdown so it sits
@@ -1519,7 +1537,7 @@
       last ? container.insertBefore(btn, last) : container.appendChild(btn);
     }
 
-    console.log(LOG, '✓ injected Copy Login button');
+    _dbg('✓ injected Copy Login button');
   }
 
   function resetCopyLoginButton() {
@@ -1539,7 +1557,9 @@
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg && msg.type === 'ocPilotToast') {
         showConsoleToast(msg.text || '', msg.style || 'success');
-        resetCopyLoginButton();
+        // resetButton: false is sent for interim retry notifications so the
+        // button stays in "Fetching…" while the background retries.
+        if (msg.resetButton !== false) resetCopyLoginButton();
       }
     });
   } catch (_) {}
@@ -1818,7 +1838,7 @@
       if (parent && (parent.tagName === 'TBODY' || parent.getAttribute('role') === 'rowgroup')) {
         parent.style.setProperty('height', cumulativeTop + 'px', 'important');
       }
-      console.log(LOG, `fixed ${rows.length} virtualized row${rows.length === 1 ? '' : 's'}, total ${cumulativeTop}px`);
+      _dbg(`fixed ${rows.length} virtualized row${rows.length === 1 ? '' : 's'}, total ${cumulativeTop}px`);
     }
   }
 
@@ -1858,7 +1878,7 @@
     });
 
     if (added) {
-      console.log(LOG, `✓ injected actions on ${added} pod row${added === 1 ? '' : 's'}`);
+      _dbg(`✓ injected actions on ${added} pod row${added === 1 ? '' : 's'}`);
       // Fire after the browser has committed our DOM insertions so the
       // measurement reflects the new content.
       requestAnimationFrame(fixPodRowHeights);
@@ -1902,6 +1922,22 @@
 
   let _favs = {};
   let _favsLoaded = false;
+
+  // ── Persistent column sort ────────────────────────────────────────────────
+  // Stored under "ocPilotSortPrefs" (separate key so it survives credential
+  // clears, same pattern as ocPilotFavourites).
+  //
+  // Shape: { [hostname]: { [resourceKind]: { column: string, direction: "asc"|"desc" } } }
+  //   resourceKind — from parseResourceListUrl().resourceKind (e.g. "pods")
+  //   column       — sort button's visible text (e.g. "Created")
+  //   direction    — "asc" or "desc"
+  let _sortPrefs = {};
+  let _sortPrefsLoaded = false;
+  let _sortPollTimer = null;
+  let _sortSaveTimer = null;
+  // Prevents concurrent calls to _applySortPreference when OKD's replaceState
+  // fires onNavigate() mid-restore and restarts the poll.
+  let _sortRestoreInProgress = false;
 
   // ── Cluster toolbar colour ─────────────────────────────────────────────────
   // Stored in "ocPilotClusterColours" as { [hostname]: "#hex" }.
@@ -2271,13 +2307,13 @@
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         e.preventDefault();
-        console.log(LOG, 'star click (list):', parsed.namespace, parsed.resourceKind, parsed.resourceName);
+        _dbg('star click (list):', parsed.namespace, parsed.resourceKind, parsed.resourceName);
         try {
           const wasFav = isFavourite(parsed.namespace, parsed.resourceKind, parsed.resourceName);
           bumpEvent(wasFav ? 'click.favourites.remove' : 'click.favourites.add');
           await toggleFavourite(parsed.namespace, parsed.resourceKind, parsed.resourceName);
           const nowFav = isFavourite(parsed.namespace, parsed.resourceKind, parsed.resourceName);
-          console.log(LOG, 'star toggled → isFav:', nowFav);
+          _dbg('star toggled → isFav:', nowFav);
           btn.title = nowFav ? 'Remove from favourites' : 'Add to favourites';
           const oldSvg = btn.querySelector('svg');
           if (oldSvg) oldSvg.replaceWith(buildStarSvg(nowFav));
@@ -2750,10 +2786,10 @@
         allFavEntries.push({ namespace: listInfo.namespace, name });
       });
     }
-    console.log(LOG, 'injectPinnedSection: allFavEntries =', allFavEntries.length,
+    _dbg('injectPinnedSection: allFavEntries =', allFavEntries.length,
       '| _favs for host:', JSON.stringify(_favs[location.hostname] || {}));
     if (!allFavEntries.length) {
-      console.log(LOG, 'injectPinnedSection: skip — no favourites for this view/kind');
+      _dbg('injectPinnedSection: skip — no favourites for this view/kind');
       // No favourites for this view — remove wrapper if present.
       if (existingWrapper) { existingWrapper.remove(); _scheduleRvResize(); }
       return;
@@ -2775,7 +2811,7 @@
     const liveRows = Array.from(
       document.querySelectorAll('tbody tr, [role="rowgroup"] [role="row"]')
     ).filter(r => !r.closest('#oc-pilot-pinned-table-wrapper'));
-    console.log(LOG, 'injectPinnedSection: liveRows found:', liveRows.length,
+    _dbg('injectPinnedSection: liveRows found:', liveRows.length,
       '| liveRows with star-wrap:', liveRows.filter(r => r.querySelector('.oc-pilot-star-wrap')).length);
     const liveRowByKey = new Map();
     liveRows.forEach(row => {
@@ -2831,9 +2867,9 @@
       document.querySelector('table') ||
       document.querySelector('[role="grid"]') ||
       document.querySelector('[role="treegrid"]');
-    console.log(LOG, 'injectPinnedSection: mainTable =',
+    _dbg('injectPinnedSection: mainTable =',
       mainTable ? `<${mainTable.tagName.toLowerCase()} role="${mainTable.getAttribute('role') || ''}" class="${(mainTable.className || '').substring(0, 60)}">` : 'null');
-    if (!mainTable) { console.error(LOG, 'injectPinnedSection: ABORT — no table/grid found in DOM'); return; }
+    if (!mainTable) { _dbg('injectPinnedSection: ABORT — no table/grid found in DOM'); return; }
 
     // Walk up to the ReactVirtualized / grid wrapper, then to its parent so we
     // can insert the pinned section BEFORE the virtualizer container.
@@ -2842,11 +2878,11 @@
       mainTable.closest('.co-m-table-grid') ||
       mainTable.parentElement;
     const insertParent = rvWrapper ? rvWrapper.parentElement : null;
-    console.log(LOG, 'injectPinnedSection: rvWrapper =',
+    _dbg('injectPinnedSection: rvWrapper =',
       rvWrapper ? `<${rvWrapper.tagName.toLowerCase()} class="${(rvWrapper.className || '').substring(0, 60)}">` : 'null',
       '| insertParent =',
       insertParent ? `<${insertParent.tagName.toLowerCase()} class="${(insertParent.className || '').substring(0, 60)}">` : 'null');
-    if (!insertParent) { console.error(LOG, 'injectPinnedSection: ABORT — insertParent is null'); return; }
+    if (!insertParent) { _dbg('injectPinnedSection: ABORT — insertParent is null'); return; }
 
     // (headerCells no longer used — colgroup removed, see comment below.)
 
@@ -3010,7 +3046,7 @@
       pinnedTable.appendChild(pinnedTbody);
       wrapper.appendChild(pinnedTable);
       insertParent.insertBefore(wrapper, rvWrapper);
-      console.log(LOG, 'injectPinnedSection: ✓ pinned section inserted with', matched.length, 'row(s)');
+      _dbg('injectPinnedSection: ✓ pinned section inserted with', matched.length, 'row(s)');
     }
 
     // Apply any active console filter so the pinned table mirrors the main one.
@@ -3194,7 +3230,7 @@
       (document.head || document.documentElement).appendChild(s);
     }
 
-    console.log(LOG, `✓ detail-star attached for "${resourceName}"`);
+    _dbg(`✓ detail-star attached for "${resourceName}"`);
   }
 
   function showFavToast(name, added) {
@@ -3252,6 +3288,128 @@
     setTimeout(() => host.remove(), 2500);
   }
 
+  // ── Persistent column sort helpers ───────────────────────────────────────
+
+  /** Load ocPilotSortPrefs from storage into _sortPrefs. */
+  function loadSortPrefs() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get('ocPilotSortPrefs', (data) => {
+          _sortPrefs = (data || {}).ocPilotSortPrefs || {};
+          _sortPrefsLoaded = true;
+          resolve();
+        });
+      } catch (_) { _sortPrefsLoaded = true; resolve(); }
+    });
+  }
+
+  /**
+   * Extract the visible label from a sort button, stripping SVG icons and PF
+   * sort-indicator spans so we get only the column-name text.
+   */
+  function _stripSortIcons(btn) {
+    const c = btn.cloneNode(true);
+    c.querySelectorAll(
+      'svg, .pf-v5-c-table__sort-indicator, .pf-c-table__sort-indicator'
+    ).forEach((el) => el.remove());
+    return c.textContent.trim();
+  }
+
+  /**
+   * Read the current sort state from the main table's aria-sort attributes.
+   * Returns { column, direction } or null if nothing is sorted.
+   * Excludes the pinned section.
+   */
+  function _getCurrentSort() {
+    const sorted = document.querySelector(
+      'th[aria-sort="ascending"]:not(#oc-pilot-pinned-table-wrapper th),' +
+      'th[aria-sort="descending"]:not(#oc-pilot-pinned-table-wrapper th),' +
+      '[role="columnheader"][aria-sort="ascending"]:not(#oc-pilot-pinned-table-wrapper [role="columnheader"]),' +
+      '[role="columnheader"][aria-sort="descending"]:not(#oc-pilot-pinned-table-wrapper [role="columnheader"])'
+    );
+    if (!sorted) return null;
+    const direction = sorted.getAttribute('aria-sort') === 'ascending' ? 'asc' : 'desc';
+    const btn = sorted.querySelector('button');
+    if (!btn) return null;
+    return { column: _stripSortIcons(btn), direction };
+  }
+
+  /**
+   * Click column headers as needed to reach the stored sort target.
+   * PF tables cycle: unsorted → ascending → descending → (ascending again).
+   * We always start from the page-default (Name asc) so one click reaches
+   * ascending and two clicks reach descending for any other column.
+   */
+  async function _applySortPreference(resourceKind) {
+    if (_sortRestoreInProgress) return; // another restore is already in-flight
+    if (!_sortPrefsLoaded) return;
+    const target = (_sortPrefs[location.hostname] || {})[resourceKind];
+    if (!target) return;
+
+    const current = _getCurrentSort();
+    // Already showing the right sort — nothing to do.
+    if (current && current.column === target.column && current.direction === target.direction) return;
+
+    // Find the target column's sort button (exclude pinned section).
+    const headers = document.querySelectorAll(
+      'th[aria-sort]:not(#oc-pilot-pinned-table-wrapper th),' +
+      '[role="columnheader"][aria-sort]:not(#oc-pilot-pinned-table-wrapper [role="columnheader"])'
+    );
+    let targetBtn = null;
+    for (const th of headers) {
+      const btn = th.querySelector('button');
+      if (btn && _stripSortIcons(btn) === target.column) { targetBtn = btn; break; }
+    }
+    if (!targetBtn) return; // column not present on this resource kind
+
+    // Guard against re-entrant calls triggered by OKD's replaceState (which
+    // fires onNavigate → restarts the poll) while we are mid-click.
+    _sortRestoreInProgress = true;
+    try {
+      // Click once → ascending for any non-current column, or toggle if already on it.
+      targetBtn.click();
+
+      // If descending is needed, wait for React to re-render and click once more.
+      if (target.direction === 'desc') {
+        await new Promise((r) => setTimeout(r, 150));
+        const after = _getCurrentSort();
+        if (!after || after.column !== target.column || after.direction !== 'desc') {
+          targetBtn.click();
+        }
+      }
+    } finally {
+      _sortRestoreInProgress = false;
+    }
+  }
+
+  function stopSortRestorePoll() {
+    if (_sortPollTimer) { clearInterval(_sortPollTimer); _sortPollTimer = null; }
+  }
+
+  /**
+   * Poll every 200 ms (up to 10 ticks = 2 s) for sort-capable column headers
+   * to appear, then apply the stored sort preference for this resource kind.
+   */
+  function startSortRestorePoll() {
+    stopSortRestorePoll();
+    if (!FEATURES.persistSort) return;
+    const listInfo = parseResourceListUrl(location.pathname);
+    if (!listInfo) return;
+
+    let ticks = 0;
+    _sortPollTimer = setInterval(async () => {
+      if (++ticks > 75) { stopSortRestorePoll(); return; }
+      // Wait until at least one sort-capable header exists (table is rendered).
+      const anyHeader = document.querySelector(
+        'th[aria-sort]:not(#oc-pilot-pinned-table-wrapper th),' +
+        '[role="columnheader"][aria-sort]:not(#oc-pilot-pinned-table-wrapper [role="columnheader"])'
+      );
+      if (!anyHeader) return;
+      stopSortRestorePoll();
+      await _applySortPreference(listInfo.resourceKind);
+    }, 200);
+  }
+
   // ── SPA navigation ────────────────────────────────────────────────────────
 
   function onNavigate() {
@@ -3274,6 +3432,8 @@
     stopDepPoll();
     stopForcePoll();
     stopCopyNamePoll();
+    stopSortRestorePoll();
+    _sortRestoreInProgress = false;
     clearPinnedSection();
     document.querySelector('.oc-pilot-detail-star')?.remove();
     clearTimeout(_starInjectTimer);
@@ -3283,8 +3443,7 @@
     const routeParsed = parseRouteUrl(location.pathname);
     const depParsed   = parseDeploymentUrl(location.pathname);
     const isPodsList  = isPodsListPath(location.pathname);
-    console.log(
-      LOG, 'navigated to', location.pathname,
+    _dbg('navigated to', location.pathname,
       podParsed ? '(pod)' :
       routeParsed ? '(route)' :
       depParsed ? '(' + depParsed.kind.toLowerCase() + ')' :
@@ -3319,6 +3478,7 @@
       scheduleStarInject();
       tryInjectDetailStar();
     }
+    if (FEATURES.persistSort) startSortRestorePoll();
   }
 
   ['pushState', 'replaceState'].forEach((fn) => {
@@ -3370,7 +3530,7 @@
 
   // ── Init ──────────────────────────────────────────────────────────────────
 
-  console.log(LOG, 'loaded on', location.pathname);
+  _dbg('loaded on', location.pathname);
   // Load feature flags from storage before first injection so we respect any
   // settings the user has saved. The callback re-runs the injectors once the
   // flags are known.
@@ -3400,7 +3560,42 @@
       });
     }
     loadClusterColour().then(() => applyToolbarColour());
+    loadSortPrefs().then(() => { if (FEATURES.persistSort) startSortRestorePoll(); });
   });
+
+  // ── Sort-save delegated listener ─────────────────────────────────────────
+  // Registered once at init time. Captures clicks on sort-header buttons,
+  // waits 150 ms for React to re-render, then reads aria-sort and saves the
+  // result to ocPilotSortPrefs. Uses capture phase so it fires before any
+  // stopPropagation calls from existing handlers.
+  document.addEventListener('click', (e) => {
+    if (!FEATURES.persistSort) return;
+    const listInfo = parseResourceListUrl(location.pathname);
+    if (!listInfo) return;
+    // Is the click inside a sort-capable column header button?
+    const btn = e.target.closest(
+      'th[aria-sort] button, [role="columnheader"][aria-sort] button'
+    );
+    if (!btn) return;
+    if (btn.closest('#oc-pilot-pinned-table-wrapper')) return;
+    // Debounce: wait for React to apply the new aria-sort value.
+    clearTimeout(_sortSaveTimer);
+    _sortSaveTimer = setTimeout(() => {
+      const current = _getCurrentSort();
+      const { resourceKind } = listInfo;
+      const hostMap = _sortPrefs[location.hostname] || {};
+      if (current) {
+        hostMap[resourceKind] = current;
+      } else {
+        delete hostMap[resourceKind]; // user cycled back to no sort
+      }
+      _sortPrefs[location.hostname] = hostMap;
+      chrome.storage.local.set({ ocPilotSortPrefs: _sortPrefs }, () => {
+        if (chrome.runtime.lastError) return;
+        _dbg('sort saved:', resourceKind, current);
+      });
+    }, 150);
+  }, true); // capture phase
 
   function escHtml(s) {
     return String(s).replace(/[&<>"']/g, c =>

@@ -16,6 +16,7 @@ import { BrowserContext } from '@playwright/test';
 const STORAGE_KEY = 'openshiftAutoLogin';
 const FAVOURITES_KEY = 'ocPilotFavourites';
 const COLOURS_KEY = 'ocPilotClusterColours';
+const SORT_PREFS_KEY = 'ocPilotSortPrefs';
 
 /** Resolve the extension's background service worker (throws if not found). */
 function getSW(context: BrowserContext) {
@@ -237,5 +238,57 @@ export async function clearAllStorage(context: BrowserContext) {
     return new Promise<void>((resolve) => {
       chrome.storage.local.remove(keys, () => resolve());
     });
-  }, { keys: [STORAGE_KEY, FAVOURITES_KEY, COLOURS_KEY] });
+  }, { keys: [STORAGE_KEY, FAVOURITES_KEY, COLOURS_KEY, SORT_PREFS_KEY] });
+}
+
+type SortPref = { column: string; direction: 'asc' | 'desc' };
+type SortPrefsMap = Record<string, Record<string, SortPref>>;
+
+/**
+ * Read the current sort preferences for this hostname.
+ * Returns a map of { [resourceKind]: { column, direction } }.
+ */
+export async function getSortPrefs(
+  context: BrowserContext
+): Promise<Record<string, SortPref>> {
+  const sw = getSW(context);
+  const host = consoleHostname();
+  const all = await sw.evaluate(
+    ({ key }): Promise<SortPrefsMap> =>
+      new Promise<SortPrefsMap>((resolve) => {
+        chrome.storage.local.get(key, (data: Record<string, unknown>) => {
+          resolve((data[key] as SortPrefsMap) || {});
+        });
+      }),
+    { key: SORT_PREFS_KEY }
+  );
+  return all[host] || {};
+}
+
+/**
+ * Overwrite sort preferences for the current hostname.
+ * Pass {} to clear all prefs for this host.
+ */
+export async function setSortPrefs(
+  context: BrowserContext,
+  prefs: Record<string, SortPref>
+) {
+  const sw = getSW(context);
+  const host = consoleHostname();
+  await sw.evaluate(
+    ({ key, host, prefs }) => {
+      return new Promise<void>((resolve) => {
+        chrome.storage.local.get(key, (data: Record<string, unknown>) => {
+          const existing = { ...((data[key] as SortPrefsMap) || {}) };
+          if (Object.keys(prefs).length > 0) {
+            existing[host] = prefs;
+          } else {
+            delete existing[host];
+          }
+          chrome.storage.local.set({ [key]: existing }, () => resolve());
+        });
+      });
+    },
+    { key: SORT_PREFS_KEY, host, prefs }
+  );
 }

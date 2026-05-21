@@ -403,7 +403,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const sourceTabId = sender.tab && sender.tab.id != null ? sender.tab.id : null;
     console.log("[oc-pilot:bg] copyLoginCommand — fetching via background SW | url:", msg.tokenRequestUrl, "| sourceTabId:", sourceTabId);
 
-    _fetchOcLoginCommand(msg.tokenRequestUrl)
+    _fetchOcLoginCommand(msg.tokenRequestUrl, sourceTabId)
       .then((cmd) => {
         console.log("[oc-pilot:bg] _fetchOcLoginCommand succeeded | cmd length:", cmd.length);
         return copyViaOffscreen(cmd).then((ok) => {
@@ -427,8 +427,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           userMsg = "Configure your username and password in OC Pilot settings, then try again";
         } else if (errStr === "auth-failed") {
           userMsg = "Authentication failed — the stored username or password is incorrect for this cluster";
+        } else if (errStr === "throttled") {
+          userMsg = "The cluster is rate-limiting auth requests — wait a moment and try again";
         } else if (errStr === "unsupported-provider") {
-          userMsg = "This cluster's identity provider does not support Basic auth (GitHub, OIDC, SAML, etc.) — Copy Login is not supported here";
+          userMsg = "Could not authenticate — the identity provider may not support Basic auth, or the cluster is temporarily unavailable. Try again in a moment.";
         } else if (errStr === "unknown-api-server") {
           userMsg = "Could not derive the API server URL — non-standard OpenShift install (expected oauth-openshift.apps.<base>)";
         } else if (/^oauth-/.test(errStr)) {
@@ -564,7 +566,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 const _CL = "[oc-pilot:bg:copylogin]"; // log prefix — visible in SW console
 
-async function _fetchOcLoginCommand(tokenRequestUrl) {
+async function _fetchOcLoginCommand(tokenRequestUrl, notifyTabId) {
   const oauthOrigin = new URL(tokenRequestUrl).origin;
   const oauthHost   = new URL(tokenRequestUrl).hostname;
 
@@ -582,7 +584,31 @@ async function _fetchOcLoginCommand(tokenRequestUrl) {
   }
 
   console.log(_CL, "requesting token via challenging-client for", oauthOrigin);
-  const token = await _fetchTokenViaChallenge(oauthOrigin, username, password);
+
+  const MAX_RETRIES = 3;
+  let token;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      token = await _fetchTokenViaChallenge(oauthOrigin, username, password);
+      break; // success — exit retry loop
+    } catch (err) {
+      const isRetryable = err.message === "unsupported-provider";
+      if (!isRetryable || attempt === MAX_RETRIES) throw err;
+
+      const retryNum = attempt + 1;
+      console.log(_CL, `attempt ${attempt + 1} got unsupported-provider — retry ${retryNum}/${MAX_RETRIES} in 5 s`);
+
+      if (notifyTabId != null) {
+        chrome.tabs.sendMessage(notifyTabId, {
+          type: "ocPilotToast",
+          text: `Retrying… (${retryNum} of ${MAX_RETRIES})`,
+          style: "info",
+          resetButton: false,
+        }).catch(() => {});
+      }
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
   console.log(_CL, "captured redirect with access_token (length " + token.length + ")");
 
   const serverUrl = _deriveApiServerUrl(oauthOrigin);
@@ -688,6 +714,7 @@ async function _fetchTokenViaChallenge(oauthOrigin, username, password) {
   if (resp) {
     console.log(_CL, "no redirect captured, response status:", resp.status, "type:", resp.type);
     if (resp.status === 401) throw new Error("auth-failed");
+    if (resp.status === 429) throw new Error("throttled");
     if (resp.status >= 500)  throw new Error("http-" + resp.status);
     // 200 OK with HTML body almost certainly means the server returned the
     // interactive login form (Basic challenge not supported by this provider).
@@ -756,8 +783,6 @@ async function ensureOffscreen() {
 //     first time it loads on a /k8s/ page; subsequent visits (including
 //     non-/k8s/ start pages) are then covered by background injection.
 
-const _consoleInjectedTabs = new Set();
-
 // In-memory set of on-premise hostnames, loaded from storage at startup.
 const _knownConsoleHosts = new Set();
 chrome.storage.local.get("ocPilotConsoleHosts", (data) => {
@@ -766,7 +791,6 @@ chrome.storage.local.get("ocPilotConsoleHosts", (data) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete") return;
-  if (_consoleInjectedTabs.has(tabId)) return;
 
   let url;
   try { url = new URL(tab.url || ""); } catch { return; }
@@ -778,7 +802,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     _knownConsoleHosts.has(url.hostname);
   if (!isKnownConsole) return;
 
-  _consoleInjectedTabs.add(tabId);
+  // Inject on every full page load (not SPA navigations — those don't trigger
+  // tabs.onUpdated). content-console.js has a DOM data-attribute guard that
+  // prevents double-execution if the manifest script already ran on the same
+  // page load. Without this, a post-OAuth-login full reload on a non-/k8s/ URL
+  // would skip injection because the old per-tab Set entry blocked it.
   chrome.scripting.executeScript({
     target: { tabId },
     files: ["content-console.js"],
@@ -786,7 +814,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  _consoleInjectedTabs.delete(tabId);
   pendingLoginTabs.delete(tabId);
 });
 

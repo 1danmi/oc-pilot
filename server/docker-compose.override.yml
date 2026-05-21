@@ -1,0 +1,19 @@
+# Local-only override: adds the mongo service that docker-compose.yml
+# references but does not define. NOT checked in (gitignored).
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - oc-pilot-telemetry-mongo:/data/db
+    command: ["--wiredTigerCacheSizeGB", "1"]
+    # No external port — only the server container talks to mongo on the
+    # compose-internal network.
+  server:
+    build:
+      context: .
+    depends_on:
+      - mongo
+
+volumes:
+  oc-pilot-telemetry-mongo:

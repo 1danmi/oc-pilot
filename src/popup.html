@@ -441,6 +441,13 @@
       .feat-toggle-name { font-size: 13px; font-weight: 500; color: #d1d5db; line-height: 1.3; }
       .feat-toggle-desc { font-size: 11px; color: #4b5563; margin-top: 2px; line-height: 1.4; }
       body.tab-mode .feat-toggle-desc { color: #374151; }
+      .feat-sub-row {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 5px 0 8px 0; gap: 8px;
+        border-top: 1px solid rgba(255,255,255,0.04);
+      }
+      .feat-sub-label { font-size: 12px; color: #4b5563; }
+      body.tab-mode .feat-sub-label { color: #374151; }
 
       /* ── What's New section ──────────────────────────────────────────────── */
       .wn-list { display: flex; flex-direction: column; }
@@ -727,6 +734,14 @@
             </div>
             <div class="switch"><input type="checkbox" id="feat-favourites" /><span class="slider"></span></div>
           </label>
+
+          <label class="feat-toggle-row">
+            <div class="feat-toggle-info">
+              <div class="feat-toggle-name">Persistent column sort</div>
+              <div class="feat-toggle-desc">Remembers which column you sorted a list by and restores it automatically when you return to that resource type</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="feat-persistSort" /><span class="slider"></span></div>
+          </label>
         </div>
 
         <div class="feat-group">
@@ -814,6 +829,12 @@
             </div>
             <div class="switch"><input type="checkbox" id="feat-copyLoginCmd" /><span class="slider"></span></div>
           </label>
+          <div class="feat-sub-row">
+            <label class="feat-sub-label" for="feat-copyLoginTimeoutSec">Copy Login timeout (seconds)</label>
+            <input id="feat-copyLoginTimeoutSec" type="number"
+                   class="diag-input" min="10" max="300"
+                   style="width:72px" placeholder="45" />
+          </div>
         </div>
 
         <p style="font-size:11px;color:#374151;margin-top:6px;line-height:1.5">
@@ -885,6 +906,15 @@
 
           <div class="wn-entry">
             <div class="wn-entry-header">
+              <span class="wn-version wn-version-new">v0.26</span>
+              <span class="wn-badge-new">New</span>
+              <span class="wn-name">Persistent column sort</span>
+            </div>
+            <div class="wn-desc">The extension now remembers which column you sorted a resource list by and restores that sort automatically when you return to the same resource type — even after a page refresh or SPA navigation. Works across all sortable list pages. Toggle in Settings → Console features → All resource pages.</div>
+          </div>
+
+          <div class="wn-entry">
+            <div class="wn-entry-header">
               <span class="wn-version wn-version-new">v0.25</span>
               <span class="wn-badge-new">New</span>
               <span class="wn-name">Pod image version badge</span>
@@ -895,6 +925,7 @@
           <div class="wn-entry">
             <div class="wn-entry-header">
               <span class="wn-version wn-version-new">v0.25</span>
+              <span class="wn-badge-new">New</span>
               <span class="wn-name">Individual pod action button toggles</span>
             </div>
             <div class="wn-desc">Terminal, Logs, and Events buttons can now be enabled or disabled independently in Settings → Console features → Pod lists. Previously they were controlled by a single switch.</div>
@@ -902,7 +933,8 @@
 
           <div class="wn-entry">
             <div class="wn-entry-header">
-              <span class="wn-version">v0.24</span>
+              <span class="wn-version wn-version-new">v0.24</span>
+              <span class="wn-badge-new">New</span>
               <span class="wn-name">Cluster toolbar colour</span>
             </div>
             <div class="wn-desc">Assign one of 8 distinct colours to each cluster's top navigation bar so browser tabs for different environments are immediately distinguishable at a glance. Pick a colour from the popup — it takes effect instantly and persists across sessions. Colours are stored per hostname independently of your credentials.</div>
@@ -910,7 +942,8 @@
 
           <div class="wn-entry">
             <div class="wn-entry-header">
-              <span class="wn-version">v0.23</span>
+              <span class="wn-version wn-version-new">v0.23</span>
+              <span class="wn-badge-new">New</span>
               <span class="wn-name">Resource favourites &amp; pinned section</span>
             </div>
             <div class="wn-desc">Star any resource from its list or detail page to pin it at the top of that resource list. Favourites are stored per cluster and namespace, survive credential changes, and work across both namespaced and all-namespaces views. Toggle per cluster in Settings → Console features.</div>
@@ -918,7 +951,8 @@
 
           <div class="wn-entry">
             <div class="wn-entry-header">
-              <span class="wn-version">v0.22</span>
+              <span class="wn-version wn-version-new">v0.22</span>
+              <span class="wn-badge-new">New</span>
               <span class="wn-name">Copy Login button in the console header</span>
             </div>
             <div class="wn-desc">A "Copy Login" pill lives in the top navigation bar of every console page. One click opens a silent background tab, fetches your token through the OAuth flow, and writes <code>oc login --token=… --server=…</code> straight to your clipboard — no extra tab to close, no manual steps.</div>

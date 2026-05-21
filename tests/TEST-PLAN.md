@@ -101,6 +101,15 @@ See `CLAUDE.md` at the repository root for run instructions.
 | 39 | inject force-delete on pod detail | flag ON, on a pod detail page | Wait for header to render | `#oc-pilot-force-delete-btn` is present |
 | 40 | flag OFF | flag OFF, on `/pods` | Wait 2 s after rows render | Zero `.oc-pilot-force-delete-btn` and no `#oc-pilot-force-delete-btn` |
 
+## Persistent column sort — `sort-persistence.spec.ts`
+
+| # | Feature | Starting state | Action | Expected result |
+|---|---------|----------------|--------|-----------------|
+| 44 | save asc preference | `persistSort` ON, pods list | Click "Created" column header once | `th[aria-sort]` on Created = `"ascending"`; `ocPilotSortPrefs[host].pods = { column:"Created", direction:"asc" }` |
+| 45 | save desc preference | same, after test 44 click | Click "Created" again | `aria-sort="descending"`; storage updated to `direction:"desc"` |
+| 46 | restore on refresh | `ocPilotSortPrefs` pre-seeded with Created desc | Hard-navigate to pods list | Created column has `aria-sort="descending"` within 3 s of load |
+| 47 | restore after SPA navigation | same pre-seed | Navigate away to deployments, then back to pods | Created column has `aria-sort="descending"` within 3 s of returning |
+
 ---
 
 ## Out of scope

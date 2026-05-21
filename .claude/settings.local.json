@@ -62,7 +62,18 @@
       "Bash(powershell -NoProfile -Command \"& ./pack.ps1\")",
       "Bash(node -e ' *)",
       "Bash(unzip -p \"build/.verify-inner.zip\" background.js)",
-      "Bash(git -C \"/c/Users/danielm/Desktop/Claude Code/oc-pilot\" add .claude/settings.local.json .gitignore CHANGELOG.md pack.ps1 src/background.js src/manifest.json telemetry-config.example.json)"
+      "Bash(git -C \"/c/Users/danielm/Desktop/Claude Code/oc-pilot\" add .claude/settings.local.json .gitignore CHANGELOG.md pack.ps1 src/background.js src/manifest.json telemetry-config.example.json)",
+      "Bash(unzip -l \"build/.verify-inner.zip\")",
+      "Bash(docker info *)",
+      "Bash(docker version *)",
+      "Bash(docker compose *)",
+      "Bash(curl -s http://localhost:8080/healthz)",
+      "Bash(curl -s -u admin:e6f9fe4bf1be530ba37e8f66200263a8 http://localhost:8080/v1/stats)",
+      "Bash(curl -s -o /dev/null -w 'status: %{http_code}\\\\n' -X POST http://localhost:8080/v1/telemetry -H 'Authorization: Bearer wrong-token' -H 'Content-Type: application/json' --data '{}')",
+      "Bash(curl -s -X POST http://localhost:8080/v1/telemetry -H 'Authorization: Bearer 40b08459e473e318b56b5413b5f5ee8cac54176910485cc177d9bc3106eb2254' -H 'Content-Type: application/json' --data '{}')",
+      "Bash(Move-Item \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot\\\\t.config\" \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot\\\\src\\\\t.config\" -Force)",
+      "Bash(Move-Item \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot\\\\t.config.example\" \"C:\\\\Users\\\\danielm\\\\Desktop\\\\Claude Code\\\\oc-pilot\\\\src\\\\t.config.example\" -Force)",
+      "Bash(node -e \"const m=require\\('./src/manifest.json'\\); console.log\\('version:', m.version\\)\")"
     ]
   },
   "hooks": {

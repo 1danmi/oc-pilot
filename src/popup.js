@@ -32,8 +32,10 @@ const defaults = {
     crossLinks:   true,
     loginToast:   true,
     copyLoginCmd: true,
+    copyLoginTimeoutSec: 45,
     clickToCopy:  true,
     favourites:   true,
+    persistSort:  true,
   },
 };
 
@@ -65,8 +67,11 @@ function load() {
       $("feat-crossLinks").checked   = cfg.features.crossLinks   !== false;
       $("feat-loginToast").checked   = cfg.features.loginToast   !== false;
       $("feat-copyLoginCmd").checked = cfg.features.copyLoginCmd !== false;
+      const _tov = cfg.features.copyLoginTimeoutSec;
+      $("feat-copyLoginTimeoutSec").value = (typeof _tov === 'number' && _tov > 0) ? _tov : 45;
       $("feat-clickToCopy").checked  = cfg.features.clickToCopy  !== false;
       $("feat-favourites").checked   = cfg.features.favourites   !== false;
+      $("feat-persistSort").checked  = cfg.features.persistSort  !== false;
     }
     updateStatus(cfg);
     renderOverrides(cfg.overrides);
@@ -112,6 +117,7 @@ function save() {
         copyLoginCmd: $("feat-copyLoginCmd").checked,
         clickToCopy:  $("feat-clickToCopy").checked,
         favourites:   $("feat-favourites").checked,
+        persistSort:  $("feat-persistSort").checked,
       } : (existing.features || defaults.features),
     };
     chrome.storage.local.set({ [STORAGE_KEY]: cfg }, () => {
@@ -455,8 +461,10 @@ function saveFeatures(changedFlag) {
       crossLinks:   $("feat-crossLinks").checked,
       loginToast:   $("feat-loginToast").checked,
       copyLoginCmd: $("feat-copyLoginCmd").checked,
+      copyLoginTimeoutSec: parseInt($("feat-copyLoginTimeoutSec").value, 10) || 45,
       clickToCopy:  $("feat-clickToCopy").checked,
       favourites:   $("feat-favourites").checked,
+      persistSort:  $("feat-persistSort").checked,
     };
     const cfg = { ...existing, features };
     chrome.storage.local.set({ [STORAGE_KEY]: cfg }, () => {
@@ -676,10 +684,11 @@ document.addEventListener("DOMContentLoaded", () => {
   if (IS_TAB) {
     ["feat-ownerLink", "feat-podTerminal", "feat-podLogs", "feat-podEvents", "feat-podImageTag", "feat-forceDelete",
      "feat-crossLinks", "feat-loginToast", "feat-copyLoginCmd",
-     "feat-clickToCopy", "feat-favourites"].forEach((id) => {
+     "feat-clickToCopy", "feat-favourites", "feat-persistSort"].forEach((id) => {
       const flagName = id.replace(/^feat-/, "");
       $(id).addEventListener("change", () => saveFeatures(flagName));
     });
+    $("feat-copyLoginTimeoutSec").addEventListener("change", () => saveFeatures());
   }
 
   // Draft persistence: every keystroke in the add-override form writes to

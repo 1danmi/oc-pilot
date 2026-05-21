@@ -1,5 +1,128 @@
 # OC Pilot — Changelog
 
+## [0.26.4] — 2026-05-20
+
+### Silent page console
+
+All 55 `console.log` calls in `content-console.js` are now routed through
+`console.debug`, which Chrome DevTools hides by default (enable the "Verbose"
+level to see them). `console.warn` and `console.error` are unchanged.
+The page console is now clean for users.
+
+---
+
+## [0.26.3] — 2026-05-20
+
+### Copy Login — 3 retries with user notification
+
+When the initial token fetch fails with a transient error (e.g. right after
+auto-login), the extension now retries up to 3 times, waiting 5 seconds between
+each attempt. A blue "Retrying… (N of 3)" toast is shown before each retry while
+the button stays in "Fetching…". If all retries are exhausted the error is surfaced
+as before.
+
+---
+
+## [0.26.2] — 2026-05-20
+
+### Bug fixes: post-login reliability
+
+- **Copy Login — first-click failure after auto-login:** The background SW now
+  automatically retries once (after 1 s) if the first `openshift-challenging-client`
+  attempt returns an unexpected response right after a fresh login. Transient to the
+  user — the button stays in "Fetching…" during the retry.
+- **Extension dead after auto-login:** Removed the `_consoleInjectedTabs` per-tab
+  deduplication set in `background.js`. It was preventing re-injection when the OAuth
+  redirect brought the browser back to a non-`/k8s/` console URL. The DOM
+  `data-oc-pilot-console-loaded` attribute in `content-console.js` already handles
+  double-execution prevention; the SW-level set was redundant and harmful.
+- **ABORT log messages:** `injectPinnedSection: ABORT` lines downgraded from
+  `console.error` to `console.log` — they are expected (page not yet rendered) and
+  should not appear as errors.
+
+---
+
+## [0.26.1] — 2026-05-20
+
+### Copy Login — configurable timeout + better error messages
+
+The Copy Login button would show "This cluster's identity provider does not support
+Basic auth" when the cluster was merely throttling the OAuth request, and the
+10-second safety-net was too short for throttled clusters (which can take 30–40 s).
+
+**Changes:**
+
+- Safety-net timeout raised from 10 s to 45 s (default) and is now configurable
+  in the settings page under **Copy Login timeout (seconds)** (range 10–300).
+- When the safety-net fires, the button resets and a
+  "Timeout — wait a moment and try again" toast is shown.
+- HTTP 429 responses from the OAuth server now produce a distinct
+  "The cluster is rate-limiting auth requests — wait a moment and try again"
+  message instead of the generic unsupported-provider error.
+- The generic unsupported-provider message is softened to suggest retrying
+  rather than declaring Copy Login permanently unsupported.
+
+---
+
+## [0.26.0] — 2026-05-20
+
+### Version bump: persistent column sort ships as 0.26
+
+Promotes the persistent column sort feature (developed in 0.25.19) to the 0.26
+release line and adds it to the What's New section in the settings page.
+
+**Bug fixes shipped with this release:**
+
+- Increased sort-restore poll window from 2 s to 15 s so the preference is
+  applied even when the pods/deployments table is slow to render.
+- Added a re-entrancy lock (`_sortRestoreInProgress`) to `_applySortPreference`
+  so that OKD's `replaceState` calls (fired on every sort click) cannot trigger
+  a concurrent restore that toggles the column one click too many.
+- Sort-save debounce (150 ms) now correctly handles the case where `waitForSort`
+  resolves before the debounce fires; storage assertions in tests 44/45 now
+  use `expect.poll` rather than a single synchronous read.
+
+---
+
+## [0.25.19] — 2026-05-20
+
+### New feature: Persistent column sort
+
+Resource list pages in the OpenShift console sort by Name on every page load.
+This release adds an option to remember the column you chose.
+
+**How it works:**
+
+When you click a column header to sort a list (e.g. Pods by "Created"), the
+extension saves your preference in `chrome.storage.local` under
+`ocPilotSortPrefs`:
+
+```
+{ [hostname]: { [resourceKind]: { column: "Created", direction: "desc" } } }
+```
+
+On every subsequent visit to that resource type — whether via hard refresh,
+SPA navigation, or browser back — the extension waits for the table to render
+and then programmatically clicks the column header to restore the saved sort.
+Clicking a column three times cycles back to "no sort" (the console's default),
+which clears the saved preference.
+
+**Scoping:** Preferences are stored per *resource kind* across all namespaces
+(e.g. all Pods pages on a given cluster use the same sort preference). Per-
+namespace scoping can be added later if needed.
+
+**Detection strategy:** The extension uses the `aria-sort` attribute that
+PatternFly (v4 and v5) places on `<th>` elements to read and write sort state.
+This is stable across OpenShift console versions.
+
+**Feature toggle:** "Persistent column sort" in the popup → Console features
+section. On by default.
+
+**Storage key:** `ocPilotSortPrefs` (top-level, separate from
+`openshiftAutoLogin` so it survives credential resets).
+
+---
+
 ## [0.25.18] — 2026-05-20
 
 ### Build: `t.config` moved into extension folder; telemetry now loaded at runtime
