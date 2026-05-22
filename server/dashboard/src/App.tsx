@@ -79,7 +79,16 @@ export default function App() {
       {stats ? (
         <>
           <div className="grid cards">
-            <StatCard label="Unique machines" value={stats.unique_machines} />
+            <StatCard
+              label="Unique machines"
+              value={stats.unique_machines}
+              sub="stable across reinstalls"
+            />
+            <StatCard
+              label="Unique installs"
+              value={stats.unique_installs}
+              sub="rotates on every (re)install"
+            />
             <StatCard label="Unique users" value={stats.unique_users} />
             <StatCard
               label="Active 1 h"

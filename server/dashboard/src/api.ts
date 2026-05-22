@@ -8,6 +8,7 @@
 
 export interface Stats {
   unique_machines: number;
+  unique_installs: number;
   unique_users: number;
   active_machines_1h: number;
   active_machines_24h: number;
@@ -23,6 +24,7 @@ export interface Stats {
 export interface TimeseriesRow {
   date: string;                  // "YYYY-MM-DD"
   unique_machines_seen: number;
+  unique_installs_seen: number;
   unique_users_seen: number;
   events_count: number;
   install_count: number;

@@ -1484,7 +1484,7 @@
       const tokenRequestUrl = getTokenRequestUrl();
       _dbg('[CopyLogin] click — tokenRequestUrl:', tokenRequestUrl);
       try {
-        chrome.runtime.sendMessage({ type: 'copyLoginCommand', tokenRequestUrl }, (resp) => {
+        chrome.runtime.sendMessage({ type: 'copyLoginCommand', tokenRequestUrl, consoleHostname: location.hostname }, (resp) => {
           if (chrome.runtime.lastError) {
             console.warn(LOG, '[CopyLogin] sendMessage error:', chrome.runtime.lastError.message);
             resetCopyLoginButton();

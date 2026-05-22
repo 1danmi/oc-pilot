@@ -168,6 +168,7 @@ async def _ensure_indexes() -> None:
         [
             # Plain field indexes.
             IndexModel([("machine_id", ASCENDING)], name="machine_id_1"),
+            IndexModel([("install_id", ASCENDING)], name="install_id_1"),
             IndexModel([("received_at", DESCENDING)], name="received_at_-1"),
             IndexModel([("version", ASCENDING)], name="version_1"),
             # Sparse on user_hash — skips docs where it's null (pre-creds).
@@ -305,7 +306,11 @@ async def require_basic(
 
 
 class TelemetryEvent(BaseModel):
-    machineId: str = Field(min_length=1, max_length=64)
+    # Wire-format convention: payload field names are camelCase (matching the
+    # rest of the body — userHash, periodStart, etc.). They get translated to
+    # snake_case DB columns in the `doc = {...}` dict in post_telemetry().
+    machineId: str = Field(min_length=1, max_length=64)   # stable per-machine (since v0.27.0)
+    installId: str = Field(min_length=1, max_length=64)   # per-install (since v0.27.0)
     userHash: str | None = Field(default=None, max_length=128)
     version: str = Field(min_length=1, max_length=32)
     periodStart: int = Field(ge=0)
@@ -352,12 +357,14 @@ async def post_telemetry(
             ip=_client_ip(request),
             reason=str(e.detail),
             machine_id=event.machineId,
+            install_id=event.installId,
         )
         raise
 
     now = datetime.now(timezone.utc)
     doc = {
         "machine_id": event.machineId,
+        "install_id": event.installId,
         "user_hash": event.userHash,
         "version": event.version,
         "period_start": event.periodStart,
@@ -379,6 +386,7 @@ async def post_telemetry(
             level=logging.ERROR,
             error=str(e),
             machine_id=event.machineId,
+            install_id=event.installId,
         )
         raise HTTPException(503, "database unavailable")
 
@@ -388,6 +396,7 @@ async def post_telemetry(
     log_event(
         "telemetry_received",
         machine_id=event.machineId,
+        install_id=event.installId,
         user_hash=event.userHash,
         version=event.version,
         period_start=event.periodStart,
@@ -405,6 +414,7 @@ async def post_telemetry(
         log_event(
             "lifecycle_install",
             machine_id=event.machineId,
+            install_id=event.installId,
             version=event.version,
             ip=ip,
         )
@@ -412,6 +422,7 @@ async def post_telemetry(
         log_event(
             "lifecycle_update",
             machine_id=event.machineId,
+            install_id=event.installId,
             version=event.version,
             previous_version=event.previousVersion,
             ip=ip,
@@ -440,6 +451,15 @@ async def _aggregate_stats() -> dict[str, Any]:
                         "$group": {
                             "_id": None,
                             "machines": {"$addToSet": "$machine_id"},
+                            "installs_set": {
+                                "$addToSet": {
+                                    "$cond": [
+                                        {"$ifNull": ["$install_id", False]},
+                                        "$install_id",
+                                        "$$REMOVE",
+                                    ]
+                                }
+                            },
                             "users": {
                                 "$addToSet": {
                                     "$cond": [
@@ -505,6 +525,7 @@ async def _aggregate_stats() -> dict[str, Any]:
     facets = result[0]
     totals = (facets["totals"] or [{}])[0] if facets["totals"] else {}
     unique_machines = len(totals.get("machines", []))
+    unique_installs = len(totals.get("installs_set", []))
     unique_users = len(totals.get("users", []))
 
     def _active(facet_key: str) -> int:
@@ -528,6 +549,7 @@ async def _aggregate_stats() -> dict[str, Any]:
 
     return {
         "unique_machines": unique_machines,
+        "unique_installs": unique_installs,
         "unique_users": unique_users,
         "active_machines_1h": _active("active_1h"),
         "active_machines_24h": _active("active_24h"),
@@ -544,6 +566,7 @@ async def _aggregate_stats() -> dict[str, Any]:
 def _empty_stats() -> dict[str, Any]:
     return {
         "unique_machines": 0,
+        "unique_installs": 0,
         "unique_users": 0,
         "active_machines_1h": 0,
         "active_machines_24h": 0,
@@ -608,6 +631,15 @@ async def get_timeseries(request: Request, days: int = 30) -> JSONResponse:
             "$group": {
                 "_id": "$day",
                 "machines": {"$addToSet": "$machine_id"},
+                "installs_set": {
+                    "$addToSet": {
+                        "$cond": [
+                            {"$ifNull": ["$install_id", False]},
+                            "$install_id",
+                            "$$REMOVE",
+                        ]
+                    }
+                },
                 "users": {
                     "$addToSet": {
                         "$cond": [
@@ -636,6 +668,7 @@ async def get_timeseries(request: Request, days: int = 30) -> JSONResponse:
         {
             "date": row["_id"],
             "unique_machines_seen": len(row.get("machines", [])),
+            "unique_installs_seen": len(row.get("installs_set", [])),
             "unique_users_seen": len(row.get("users", [])),
             "events_count": int(row.get("events_count", 0)),
             "install_count": int(row.get("install_count", 0)),

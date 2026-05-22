@@ -34,9 +34,10 @@ on update) to the telemetry server. The POST body contains:
 
 ```jsonc
 {
-  "machineId":        "uuid-v4",          // opaque, generated once per Chrome profile
+  "machineId":        "sha256-hex",       // stable per-machine; survives uninstall/reinstall (since v0.27.0)
+  "installId":        "uuid-v4",          // per-install; rotates on every (re)install (since v0.27.0)
   "userHash":         "sha256-hex",       // SHA-256("oc-pilot:" + username.toLowerCase()), or null
-  "version":          "0.25.11",          // from manifest.json
+  "version":          "0.27.0",           // from manifest.json
   "periodStart":      1700000000,         // unix seconds — start of the counting window
   "periodEnd":        1700003600,         // unix seconds — end of the counting window
   "counters":         { "click.podTerminal": 5, "click.favourites.add": 3 },
@@ -46,9 +47,24 @@ on update) to the telemetry server. The POST body contains:
 }
 ```
 
-**`machineId`** is a UUIDv4 generated once on first install and stored in
-`chrome.storage.local`. It never changes. It is used to count distinct
-machines.
+**`machineId`** is a stable per-machine identifier. Resolution is hybrid:
+
+1. Primary: `chrome.storage.sync["ocPilotMachineId"]`. The value persists
+   across uninstall + reinstall as long as the user is on the same Chrome
+   profile.
+2. Fallback (sync unavailable): a deterministic SHA-256 hash of stable
+   navigator properties (`platform`, `hardwareConcurrency`, `deviceMemory`,
+   `languages`). Same machine → same hash, even with sync disabled.
+
+`navigator.userAgent` and timezone are deliberately excluded from the
+fingerprint so the value doesn't churn on every Chrome major update or when
+the user travels. It is used to count distinct machines.
+
+**`installId`** is a UUIDv4 generated once on first install and stored in
+`chrome.storage.local`. It rotates on every reinstall (because local storage
+is wiped). It is used to count distinct installs — the gap between
+`unique_machines` and `unique_installs` reflects reinstall churn on the same
+hardware.
 
 **`userHash`** is a one-way SHA-256 of `"oc-pilot:" + username.toLowerCase()`.
 The salt is fixed and intentional — the same user on two different machines
@@ -176,19 +192,24 @@ hourly POST. Names follow the `category.subject[.qualifier]` convention.
 ```js
 {
   _id:              ObjectId,
-  machine_id:       "uuid-v4",
+  machine_id:       "sha256-hex",      // stable per-machine (v0.27.0+)
+  install_id:       "uuid-v4",         // per-install (v0.27.0+)
   user_hash:        "sha256-hex" | null,
-  version:          "0.25.11",
+  version:          "0.27.0",
   period_start:     1700000000,        // unix sec
   period_end:       1700003600,        // unix sec
   counters:         { "click.podTerminal": 5, ... },
   is_install:       false,
   is_update:        false,
-  previous_version: null | "0.25.10",
+  previous_version: null | "0.26.5",
   received_at:      ISODate(...),      // server insertion time
   client_ip:        null               // intentionally not stored
 }
 ```
+
+> Note: pre-v0.27.0 rows in MongoDB only have `machine_id` populated (no
+> `install_id`). The `unique_installs` aggregations use `$ifNull` / `$cond` to
+> skip those rows so historical data isn't counted incorrectly.
 
 The collection is **append-only** — the server never updates or deletes
 documents. Every `/v1/stats` call re-aggregates by summing counters across all
@@ -199,6 +220,7 @@ documents. This is what makes the 30-day activity timeseries possible.
 | Index | Purpose |
 |---|---|
 | `{ machine_id: 1 }` | All docs for a machine |
+| `{ install_id: 1 }` | All docs for a single install (added in v0.27.0) |
 | `{ user_hash: 1 }` sparse | Count distinct users (skips null hashes) |
 | `{ received_at: -1 }` | Active-window and timeseries queries |
 | `{ machine_id: 1, received_at: -1 }` | Most recent docs for a machine |
@@ -245,14 +267,15 @@ Returns aggregated all-time and active-window statistics:
 
 ```jsonc
 {
-  "unique_machines":        42,
+  "unique_machines":        42,                                      // stable per-machine (since v0.27.0)
+  "unique_installs":        58,                                      // per-install — gap vs. unique_machines = reinstall churn
   "unique_users":           17,
   "active_machines_1h":      9,
   "active_machines_24h":    19,
   "active_machines_7d":     33,
   "per_event_total":        { "click.podTerminal": 1830, ... },
   "per_event_avg_per_user": { "click.podTerminal": 107.6, ... },
-  "version_distribution":   { "0.25.11": 30, "0.25.10": 12 },
+  "version_distribution":   { "0.27.0": 30, "0.26.5": 12 },
   "installs_total":         45,
   "updates_total":          128,
   "last_event_received_at": 1700003600
@@ -269,7 +292,8 @@ Returns daily bucketed counts for the last N days (default 30, max 365):
 [
   {
     "date":                   "2026-05-19",
-    "unique_machines_seen":   12,
+    "unique_machines_seen":   12,                                    // stable machines on this day
+    "unique_installs_seen":   14,                                    // installs on this day (machines + reinstalls)
     "unique_users_seen":       8,
     "events_count":          347,
     "install_count":           2,
@@ -533,7 +557,8 @@ section slides into view.
 
 | Field | Description |
 |---|---|
-| Machine ID | First 8 chars of the UUID for this Chrome profile |
+| Machine ID | First 8 chars of the stable per-machine ID (survives uninstall/reinstall) |
+| Install ID | First 8 chars of the per-install UUID (rotates on every install) |
 | Server address | The effective telemetry endpoint (build-time default) |
 | Events since last send | Live count of buffered counters (refreshes every 2 s) |
 | Last successful send | Relative time of the last accepted POST |
@@ -557,9 +582,10 @@ file **and** stderr):
   "level":            "INFO",
   "logger":           "oc-pilot-telemetry",
   "event":            "telemetry_received",
-  "machine_id":       "uuid",
+  "machine_id":       "sha256-hex",
+  "install_id":       "uuid",
   "user_hash":        "sha256-hex or null",
-  "version":          "0.25.11",
+  "version":          "0.27.0",
   "period_start":     1700000000,
   "period_end":       1700003600,
   "period_seconds":   3600,

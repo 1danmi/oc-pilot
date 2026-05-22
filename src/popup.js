@@ -516,8 +516,15 @@ function refreshDiagnostics() {
     const counters = tel.counters || {};
     const sum = Object.values(counters).reduce((s, v) => s + ((v | 0) || 0), 0);
     const machineId = tel.machineId || "(not seeded yet)";
-    $("diag-machine-id").textContent = machineId.length > 8 ? machineId.slice(0, 8) + "…" : machineId;
+    // Fall back to tel.machineId for pre-rename installs that haven't migrated yet.
+    const installId = tel.installId || tel.machineId || "(not seeded yet)";
+    const _truncate = (id) => (id && id.length > 8) ? id.slice(0, 8) + "…" : id;
+    $("diag-machine-id").textContent = _truncate(machineId);
     $("diag-machine-id").title = machineId;
+    if ($("diag-install-id")) {
+      $("diag-install-id").textContent = _truncate(installId);
+      $("diag-install-id").title = installId;
+    }
     $("diag-counter-sum").textContent = String(sum);
     $("diag-last-send").textContent = formatRelative(tel.lastSendAt);
     // Fetch URL, interval and next-fire time from background.

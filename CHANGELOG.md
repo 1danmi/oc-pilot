@@ -1,5 +1,60 @@
 # OC Pilot — Changelog
 
+## [0.26.6] — 2026-05-22
+
+### Telemetry: stable machineId + per-install installId
+
+The single `machineId` field in the telemetry payload was a random UUID
+seeded at install time. Uninstalling and reinstalling the extension reset
+the UUID, making the same user/machine appear as two distinct machines in
+the dashboards. There are now two identifiers:
+
+- **`machineId`** — Stable per-machine. Survives uninstall/reinstall.
+  Hybrid resolution: primary value lives in `chrome.storage.sync` (persists
+  across reinstalls on the same Chrome profile); falls back to a
+  deterministic SHA-256 fingerprint hash of stable navigator properties
+  (`platform`, `hardwareConcurrency`, `deviceMemory`, `languages`) when
+  sync is unavailable. `navigator.userAgent` and timezone are deliberately
+  excluded so the value doesn't churn on every Chrome major update.
+- **`installId`** — Per-install UUID. Resets on every install/reinstall.
+  Equal to the value that used to live in `machineId`; the old value
+  migrates to `installId` automatically on the next telemetry send.
+
+Both IDs are now shown in the popup's Developer settings (truncated to
+8 chars, full value on hover).
+
+Wire format: both fields are camelCase in the POST body, matching every
+other field. The MongoDB columns continue to be snake_case (`machine_id`,
+`install_id`) — the camelCase → snake_case translation happens once, in
+the server's `doc = {...}` insertion.
+
+No new permissions required — `chrome.storage.sync` is covered by the
+existing `storage` permission.
+
+---
+
+## [0.26.5] — 2026-05-20
+
+### Bug fix: cluster credential overrides ignored
+
+Two code paths looked up per-cluster credential overrides using the wrong
+hostname key, so the fallback main credentials were always used instead.
+
+- **Copy Login (background.js):** Was deriving the console hostname from the
+  OAuth hostname via a regex transform (`oauth-openshift.` →
+  `console-openshift-console.`). This fails for any cluster with a custom
+  console route that doesn't follow that naming pattern. Fixed by passing
+  `consoleHostname` directly from the content script (which knows the real
+  console hostname via `location.hostname`) and using that for the override
+  lookup. The regex fallback is kept for backward compatibility.
+- **Auto-login (content.js):** Was looking up overrides by `location.hostname`
+  while running on the OAuth/login page (e.g., `oauth-openshift.apps.*`), but
+  overrides are stored under the console hostname
+  (e.g., `console-openshift-console.apps.*`). Fixed by also trying the
+  console-hostname equivalent before falling back to main credentials.
+
+---
+
 ## [0.26.4] — 2026-05-20
 
 ### Silent page console

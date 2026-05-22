@@ -15,8 +15,9 @@ interface Props {
 }
 
 /**
- * Three-series line chart: unique machines/day, unique users/day, events/day.
- * Drives off /v1/stats/timeseries?days=30.
+ * Four-series line chart: machines/day, installs/day, users/day, events/day.
+ * Drives off /v1/stats/timeseries?days=30. The gap between Machines and Installs
+ * is the reinstall churn (same physical machine reinstalling the extension).
  */
 export default function ActivityLineChart({ timeseries }: Props) {
   const data = timeseries.series;
@@ -46,6 +47,15 @@ export default function ActivityLineChart({ timeseries }: Props) {
             name="Machines"
             stroke="var(--accent)"
             strokeWidth={2}
+            dot={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="unique_installs_seen"
+            name="Installs"
+            stroke="var(--warn, #f59e0b)"
+            strokeWidth={2}
+            strokeDasharray="4 2"
             dot={false}
           />
           <Line

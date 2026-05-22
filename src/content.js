@@ -83,7 +83,12 @@
       chrome.storage.local.get(STORAGE_KEY, (data) => {
         const cfg = data[STORAGE_KEY] || {};
         const overrides = cfg.overrides || {};
-        const hostOverride = overrides[location.hostname];
+        // Overrides are keyed by the console hostname (what the user sees in
+        // the browser). content.js may run on the OAuth/login page whose
+        // hostname differs (e.g. oauth-openshift.* vs console-openshift-console.*).
+        // Try the current hostname first, then its console-hostname equivalent.
+        const consoleEquiv = location.hostname.replace(/^oauth-openshift\./, 'console-openshift-console.');
+        const hostOverride = overrides[location.hostname] || overrides[consoleEquiv];
         resolve({
           username: (hostOverride ? hostOverride.username : cfg.username) || "",
           password: (hostOverride ? hostOverride.password : cfg.password) || "",

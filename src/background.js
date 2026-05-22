@@ -116,6 +116,52 @@ async function hashUsername(username) {
   }
 }
 
+/**
+ * Stable per-machine fingerprint hash.
+ * Uses only properties available in a service worker (no offscreen / no screen
+ * API access). Deliberately excludes navigator.userAgent (changes with every
+ * Chrome major update) and timezone (changes when the user travels), so the
+ * value stays consistent across reinstalls on the same hardware.
+ */
+async function _computeMachineFingerprint() {
+  const platform  = (navigator && navigator.platform) || "";
+  const cores     = (navigator && navigator.hardwareConcurrency) || 0;
+  const memory    = (navigator && navigator.deviceMemory) || 0;
+  const languages = ((navigator && navigator.languages) || [(navigator && navigator.language) || ""]).join(",");
+  const str = [platform, cores, memory, languages].join("|");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  const bytes = new Uint8Array(buf);
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i].toString(16);
+    hex += b.length === 1 ? "0" + b : b;
+  }
+  return hex;
+}
+
+/**
+ * Hybrid machine_id resolver. Prefers chrome.storage.sync (survives uninstall
+ * on the same Chrome profile); falls back to a deterministic fingerprint hash
+ * (so the same machine still gets the same value even with sync disabled).
+ */
+async function _getOrCreateMachineId() {
+  try {
+    const synced = await new Promise((r) => {
+      try { chrome.storage.sync.get("ocPilotMachineId", (d) => r(d || {})); }
+      catch (_) { r({}); }
+    });
+    if (synced && synced.ocPilotMachineId) return synced.ocPilotMachineId;
+  } catch (_) {}
+  const fp = await _computeMachineFingerprint();
+  try {
+    await new Promise((r) => {
+      try { chrome.storage.sync.set({ ocPilotMachineId: fp }, () => r()); }
+      catch (_) { r(); }
+    });
+  } catch (_) {}
+  return fp;
+}
+
 /** Promise wrapper around chrome.storage.local.{get,set}. */
 function _storageGet(key) {
   return new Promise((resolve) => {
@@ -152,12 +198,21 @@ async function sendTelemetry(opts) {
     const cfg = (data && data.openshiftAutoLogin) || {};
     const tel = cfg.telemetry || {};
 
-    const machineId = tel.machineId;
-    if (!machineId) {
-      // We refuse to send without a machineId — it should be seeded by
-      // onInstalled. If it isn't here, something's very wrong.
-      console.warn(TELEMETRY_LOG, "no machineId — bailing");
-      return { ok: false, error: "no machineId in storage" };
+    // Two identifiers now: installId (per-install UUID, was previously stored
+    // as machineId) and machineId (stable per-machine, sync+fingerprint hybrid).
+    // Legacy installs only have tel.machineId — migrate on the fly: that value
+    // becomes the installId, and we compute a fresh machineId.
+    let installId = tel.installId || tel.machineId;
+    let machineId;
+    if (tel.installId && tel.machineId) {
+      // Both new fields already present — fast path.
+      machineId = tel.machineId;
+    } else {
+      machineId = await _getOrCreateMachineId();
+    }
+    if (!installId) {
+      console.warn(TELEMETRY_LOG, "no installId — bailing");
+      return { ok: false, error: "no installId in storage" };
     }
 
     const snapshot = (tel.counters && typeof tel.counters === "object") ? { ...tel.counters } : {};
@@ -180,7 +235,8 @@ async function sendTelemetry(opts) {
     }
 
     const body = {
-      machineId,
+      machineId,           // stable per-machine
+      installId,           // per-install
       userHash,
       version: chrome.runtime.getManifest().version,
       periodStart,
@@ -287,18 +343,25 @@ try {
         const cfg = (data && data.openshiftAutoLogin) || {};
         const tel = cfg.telemetry || {};
 
-        // Seed machineId on first install if missing. Persist immediately so
-        // the first sendTelemetry call can find it.
-        let machineId = tel.machineId;
-        if (!machineId) {
-          machineId = (crypto.randomUUID && crypto.randomUUID()) ||
+        // Two identifiers:
+        //   installId — per-install UUID. Was previously stored under the
+        //               name `machineId`; migrate any legacy value into here.
+        //   machineId — stable per-machine, sync+fingerprint hybrid. Survives
+        //               uninstall + reinstall on the same Chrome profile (sync
+        //               path) or the same hardware (fingerprint fallback).
+        let installId = tel.installId || tel.machineId;
+        if (!installId) {
+          installId = (crypto.randomUUID && crypto.randomUUID()) ||
                       (Date.now() + "-" + Math.random().toString(36).slice(2));
         }
+        const machineId = await _getOrCreateMachineId();
+
         await _storageSet({
           openshiftAutoLogin: {
             ...cfg,
             telemetry: {
               ...tel,
+              installId,
               machineId,
               counters: tel.counters || {},
               periodStart: tel.periodStart || Math.floor(Date.now() / 1000),
@@ -403,7 +466,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const sourceTabId = sender.tab && sender.tab.id != null ? sender.tab.id : null;
     console.log("[oc-pilot:bg] copyLoginCommand — fetching via background SW | url:", msg.tokenRequestUrl, "| sourceTabId:", sourceTabId);
 
-    _fetchOcLoginCommand(msg.tokenRequestUrl, sourceTabId)
+    _fetchOcLoginCommand(msg.tokenRequestUrl, sourceTabId, msg.consoleHostname || null)
       .then((cmd) => {
         console.log("[oc-pilot:bg] _fetchOcLoginCommand succeeded | cmd length:", cmd.length);
         return copyViaOffscreen(cmd).then((ok) => {
@@ -566,16 +629,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 const _CL = "[oc-pilot:bg:copylogin]"; // log prefix — visible in SW console
 
-async function _fetchOcLoginCommand(tokenRequestUrl, notifyTabId) {
+async function _fetchOcLoginCommand(tokenRequestUrl, notifyTabId, consoleHostname) {
   const oauthOrigin = new URL(tokenRequestUrl).origin;
-  const oauthHost   = new URL(tokenRequestUrl).hostname;
 
-  // Reconstruct the console hostname so we can look up any per-cluster
-  // credential override (overrides are keyed by console hostname, per
-  // src/content.js loadConfig()).
-  const consoleHost = oauthHost.replace(
-    /^oauth-openshift\./, "console-openshift-console."
-  );
+  // Prefer the console hostname sent directly by content-console.js (always
+  // accurate). Fall back to regex-deriving it from the OAuth hostname for
+  // backwards compatibility with older cached messages.
+  const consoleHost = consoleHostname ||
+    new URL(tokenRequestUrl).hostname.replace(/^oauth-openshift\./, "console-openshift-console.");
 
   const { username, password } = await _getStoredCredentials(consoleHost);
   if (!username || !password) {
