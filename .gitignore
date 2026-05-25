@@ -4,12 +4,12 @@ build/
 # Node / Playwright
 node_modules/
 playwright-report/
-test-results/
+tests/results/
 .playwright/
 
 # Test secrets and saved auth state
 tests/.env
-.auth-state.json
+tests/.auth-state.json
 
 # IDE / OS
 .vscode/
@@ -26,17 +26,18 @@ oc-pilot-mongo-deploy/
 # Claude worktrees
 .claude/worktrees/
 
-# Server dashboard build output and deps
-server/dashboard/dist/
-server/dashboard/node_modules/
+# Telemetry-server dashboard build output and deps
+telemetry-server/dashboard/dist/
+telemetry-server/dashboard/node_modules/
 
-# Server logs (bind-mounted at runtime)
-server/logs/
+# Telemetry-server logs (bind-mounted at runtime)
+telemetry-server/logs/
 
-# Server local config (contains secrets)
-server/config.yaml
+# Telemetry-server local config (contains secrets)
+telemetry-server/config.yaml
 
-# Extension telemetry config — lives in src/ for runtime loading by background.js.
-# Contains the bearer token. Excluded from CRX builds by pack.ps1 (deleted from
-# staging before zip). Never committed; copy src/t.config.example to src/t.config.
-src/t.config
+# Extension telemetry config — lives in extension/ for runtime loading by
+# background.js. Contains the bearer token. Excluded from CRX builds by
+# scripts/build-crx.ps1 (deleted from staging before zip). Never committed;
+# copy extension/t.config.example to extension/t.config.
+extension/t.config

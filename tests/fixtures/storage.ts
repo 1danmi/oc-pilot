@@ -23,7 +23,7 @@ function getSW(context: BrowserContext) {
   const sws = context.serviceWorkers();
   if (!sws.length) {
     throw new Error(
-      'Extension service worker not found. Is the extension loaded from src/?'
+      'Extension service worker not found. Is the extension loaded from extension/?'
     );
   }
   return sws[0];
@@ -78,7 +78,7 @@ export async function getFeatures(context: BrowserContext): Promise<Record<strin
 /**
  * The extension stores favourites in a 4-level structure:
  *   { [hostname]: { [namespace]: { [kind]: string[] } } }
- * (see src/content-console.js, around the "Resource Favourites" section).
+ * (see extension/content-console.js, around the "Resource Favourites" section).
  *
  * Tests reference favourites with a flat "<ns>/<kind>" key for ergonomics, so
  * we translate at the fixture boundary. The hostname is taken from

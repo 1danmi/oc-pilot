@@ -10,7 +10,7 @@ server:
 
 auth:
   # The shared bearer token that every extension presents on POST /v1/telemetry.
-  # The same value must be baked into src/background.js as DEFAULT_TELEMETRY_TOKEN.
+  # The same value must be baked into extension/background.js as DEFAULT_TELEMETRY_TOKEN.
   # Generate with e.g. `openssl rand -hex 32`.
   telemetry_token: "REPLACE-ME-with-32-char-random"
 

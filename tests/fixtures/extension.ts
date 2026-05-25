@@ -29,10 +29,10 @@ export const test = base.extend<ExtFixtures>({
     // Use a fresh temp profile dir for each test so there is no bleed between
     // tests via persisted extension storage (each test sets its own state).
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-pilot-test-'));
-    // Load the extension straight from src/ — the same files pack.ps1 zips
-    // into the production CRX. Avoids the failure mode where a hand-maintained
-    // dist/ silently drifts behind src/ and tests exercise stale code.
-    const extPath = path.resolve(__dirname, '../../src');
+    // Load the extension straight from extension/ — the same files that
+    // scripts/build-crx.ps1 zips into the production CRX. The tests therefore
+    // exercise the exact source about to ship.
+    const extPath = path.resolve(__dirname, '../../extension');
 
     const ctx = await chromium.launchPersistentContext(tmpDir, {
       headless: false,
@@ -45,7 +45,7 @@ export const test = base.extend<ExtFixtures>({
     });
 
     // Apply kubeadmin session cookies so the console is already authenticated.
-    const authStatePath = path.resolve(__dirname, '../../.auth-state.json');
+    const authStatePath = path.resolve(__dirname, '../.auth-state.json');
     try {
       const authState = JSON.parse(fs.readFileSync(authStatePath, 'utf-8'));
       if (authState.cookies?.length) {

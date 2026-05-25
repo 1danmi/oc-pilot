@@ -1,5 +1,47 @@
 # OC Pilot — Changelog
 
+> **Note on file paths in historical entries.** As of 2026-05-25 the repo was
+> reorganized: `src/` → `extension/`, `server/` → `telemetry-server/`, build
+> scripts (`pack.ps1`, `pack-crx.js`, `install.ps1`, `make-icons.ps1`) moved
+> into `scripts/`. Historical entries below still reference the OLD paths
+> because they describe the state of the repo at the time of each release.
+> No code was changed in the rename — only file/folder moves.
+
+## [0.27.1] — 2026-05-25
+
+### Bug fix: telemetry `machineId` collided across similar hardware
+
+v0.27.0 derived `machineId` from a SHA-256 hash of `navigator.platform |
+hardwareConcurrency | deviceMemory | languages`. That made the value
+deterministic across reinstalls on the same hardware — but also produced
+the **same** value for any two machines whose hardware specs happened to
+match. On a real install this caused 7 unique users to be counted as only
+5 unique machines, because two pairs of engineers were on identical
+corporate laptops.
+
+v0.27.1 drops the fingerprint entirely:
+
+- `machineId` is now a **random UUID** generated once and stored in
+  `chrome.storage.sync["ocPilotMachineId"]`. Chrome sync replicates the
+  value across uninstall + reinstall on the same Chrome profile — same
+  persistence guarantee as before for sync-on users, with no possibility
+  of cross-machine collision.
+- Sync-off users lose the "stable across reinstall" property (they get a
+  new random UUID per install, same as `installId`). That's strictly
+  better than silent collisions across distinct machines.
+- **Auto-migration:** on the next telemetry send after upgrading, any
+  legacy 64-char hex `machineId` (either in `tel.machineId` or in
+  `chrome.storage.sync["ocPilotMachineId"]`) is recognised by shape and
+  replaced with a fresh random UUID. The local mirror is persisted
+  immediately so the popup diagnostics reflect the new value.
+
+Server-side, the same `machineId` column receives the new UUID format —
+no schema change. Existing dashboard counts will show a one-time blip as
+the upgraded installs all "appear" as new machines, but counts converge
+within an hour as every install posts at least once.
+
+---
+
 ## [0.27.0] — 2026-05-22
 
 ### New feature: SPA-style navigation for extension-injected anchors

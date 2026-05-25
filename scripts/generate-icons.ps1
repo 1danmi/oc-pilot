@@ -91,8 +91,9 @@ function New-Icon {
     Write-Host "  wrote $OutPath  ($Size x $Size)"
 }
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$iconsDir = Join-Path $root 'src/icons'
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root      = Split-Path -Parent $scriptDir
+$iconsDir  = Join-Path $root 'extension/icons'
 
 Write-Host "Generating OC Pilot icons..."
 New-Icon -Size 16  -OutPath (Join-Path $iconsDir 'icon-16.png')

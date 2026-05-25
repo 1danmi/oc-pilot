@@ -2,11 +2,14 @@ import { defineConfig } from '@playwright/test';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 
-dotenv.config({ path: path.resolve(__dirname, 'tests/.env') });
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 export default defineConfig({
-  globalSetup: './tests/fixtures/auth.setup.ts',
-  testDir: './tests',
+  globalSetup: './fixtures/auth.setup.ts',
+  testDir: '.',
+  // Keep ephemeral test artefacts (traces, screenshots, .last-run.json)
+  // colocated with the tests instead of polluting the project root.
+  outputDir: './results',
   // Each test gets its own launchPersistentContext (fresh tmpDir), so tests
   // are fully isolated — no shared chrome.storage.local, no shared cookies.
   // The OKD cluster is read-only from the tests' perspective.

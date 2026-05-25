@@ -1,4 +1,4 @@
-# install.ps1 — Install the OC Pilot CRX via Chrome's enterprise policy.
+# install-policy.ps1 — Install the OC Pilot CRX via Chrome's enterprise policy.
 #
 # Chrome blocks direct .crx installs (drag-and-drop, double-click) for any
 # extension not from the Chrome Web Store. The supported workaround for
@@ -14,21 +14,22 @@
 #      the extension on its next launch — and re-installs it automatically
 #      if you ever uninstall it from chrome://extensions by mistake.
 #
-# Re-running the script after `.\pack.ps1` upgrades the install in place
-# (Chrome picks up the new version on next launch).
+# Re-running the script after `.\scripts\build-crx.ps1` upgrades the install
+# in place (Chrome picks up the new version on next launch).
 #
 # Usage:
-#   .\install.ps1              # install / upgrade
-#   .\install.ps1 -Uninstall   # remove the policy (Chrome will uninstall on restart)
+#   .\scripts\install-policy.ps1              # install / upgrade
+#   .\scripts\install-policy.ps1 -Uninstall   # remove the policy (Chrome will uninstall on restart)
 
 param(
     [switch]$Uninstall
 )
 
 $ErrorActionPreference = 'Stop'
-$root     = Split-Path -Parent $MyInvocation.MyCommand.Path
-$buildDir = Join-Path $root 'build'
-$keyFile  = Join-Path (Split-Path $root -Parent) 'oc-pilot.pem'
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root      = Split-Path -Parent $scriptDir
+$buildDir  = Join-Path $root 'build'
+$keyFile   = Join-Path (Split-Path $root -Parent) 'oc-pilot.pem'
 $regPath  = 'HKCU:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist'
 
 # ── Derive extension ID from the PEM private key ─────────────────────────────
@@ -95,7 +96,7 @@ $crx = Get-ChildItem -Path $buildDir -Filter 'oc-pilot-*.crx' -ErrorAction Silen
        } | Select-Object -Last 1
 
 if (-not $crx) {
-    Write-Error "No oc-pilot-*.crx found in $buildDir. Run .\pack.ps1 first."
+    Write-Error "No oc-pilot-*.crx found in $buildDir. Run .\scripts\build-crx.ps1 first."
 }
 
 $version     = $crx.BaseName -replace '^oc-pilot-', ''
@@ -150,4 +151,4 @@ Write-Host ""
 Write-Host "→ Quit Chrome COMPLETELY (close all windows, check Task Manager) and reopen." -ForegroundColor Cyan
 Write-Host "  The extension installs automatically — see chrome://extensions." -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  To uninstall:  .\install.ps1 -Uninstall" -ForegroundColor DarkGray
+Write-Host "  To uninstall:  .\scripts\install-policy.ps1 -Uninstall" -ForegroundColor DarkGray

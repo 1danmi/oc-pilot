@@ -1,19 +1,22 @@
-# pack.ps1 — Build a versioned CRX3 from src/ using the project's signing key.
+# build-crx.ps1 — Build a versioned CRX3 from extension/ using the project's signing key.
 #
-# Usage:  .\pack.ps1
+# Usage:  .\scripts\build-crx.ps1   (from project root, or anywhere — it resolves
+#                                    paths from $PSScriptRoot)
 #
-# Output: build\oc-pilot-<version>.crx
-# Reads the version from src\manifest.json automatically.
+# Output: build\oc-pilot-<version>.crx   (in project root)
+# Reads the version from extension\manifest.json automatically.
 #
 # Requires: Node.js (node in PATH)
-# The signing key is oc-pilot.pem in the same directory as this script.
+# The signing key is oc-pilot.pem one level above the project root (so it isn't
+# accidentally committed). Run `scripts\crx-signer.js` is invoked under the hood.
 
 $ErrorActionPreference = 'Stop'
-$root    = Split-Path -Parent $MyInvocation.MyCommand.Path
-$src     = Join-Path $root 'src'
-$keyFile = Join-Path (Split-Path $root -Parent) 'oc-pilot.pem'
-$buildDir= Join-Path $root 'build'
-$packJs  = Join-Path $root 'pack-crx.js'
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root      = Split-Path -Parent $scriptDir
+$src       = Join-Path $root 'extension'
+$keyFile   = Join-Path (Split-Path $root -Parent) 'oc-pilot.pem'
+$buildDir  = Join-Path $root 'build'
+$packJs    = Join-Path $scriptDir 'crx-signer.js'
 
 # ── Read version from manifest ────────────────────────────────────────────────
 $manifest = Get-Content (Join-Path $src 'manifest.json') -Raw | ConvertFrom-Json
@@ -25,10 +28,10 @@ if (Test-Path $dest) {
   Write-Host "  $dest already exists — overwriting." -ForegroundColor Yellow
 }
 
-# ── Stage src/ to a temp dir ──────────────────────────────────────────────────
-# t.config lives in src/ for runtime loading by the unpacked extension.
-# We stage src/ to a temp dir and delete t.config before zipping so it is
-# never bundled into the CRX. Unpacked installs read the file directly.
+# ── Stage extension/ to a temp dir ────────────────────────────────────────────
+# t.config lives in extension/ for runtime loading by the unpacked extension.
+# We stage extension/ to a temp dir and delete t.config before zipping so it
+# is never bundled into the CRX. Unpacked installs read the file directly.
 $staging = Join-Path $env:TEMP "oc-pilot-stage-$version"
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
 New-Item -ItemType Directory -Path $staging | Out-Null

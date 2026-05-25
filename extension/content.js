@@ -2,6 +2,30 @@
   const STORAGE_KEY = "openshiftAutoLogin";
   const LOG_PREFIX = "[oc-pilot]";
 
+  // Fire-and-forget telemetry bump (see telemetry-server/ for the receiver). Silent on
+  // any failure — a sleeping SW or chrome.runtime hiccup must never break the
+  // login automation flow.
+  function bumpEvent(name) {
+    try { chrome.runtime.sendMessage({ type: "telemetry/bump", event: name }); } catch (_) {}
+  }
+
+  // Relay diagnostic events from the silent popup tab to the background service
+  // worker console. The silent tab closes the moment loginCommandReady is sent —
+  // DevTools cannot be attached in time to see what happened inside it.
+  //
+  // All relayed messages appear as [oc-pilot:silent] entries in the persistent
+  // background SW console:
+  //   chrome://extensions → OC Pilot → "Inspect views: service worker"
+  //
+  // Usage: silentLog("step.name", "key=value | key2=value2")
+  function silentLog(label, data) {
+    const dataStr = data !== undefined ? String(data) : '';
+    console.log(LOG_PREFIX, '[silent]', label, dataStr);
+    try {
+      chrome.runtime.sendMessage({ type: 'silentTabLog', label, data: dataStr });
+    } catch (_) {}
+  }
+
   // Page-level dedupe flag. Resets on every full navigation because the
   // content script is re-injected. Do NOT use sessionStorage here — it
   // persists across navigations in the same tab and would block re-login
@@ -21,6 +45,12 @@
       "pathname:", pathname,
       "| provider:", config.providerName,
       "| has creds:", !!(config.username && config.password)
+    );
+    silentLog("main.entry",
+      "url=" + location.href +
+      " | silent=" + isSilentMode() +
+      " | hasCreds=" + !!(config.username && config.password) +
+      " | readyState=" + document.readyState
     );
 
     if (pathname.endsWith("/oauth/token/request")) {
@@ -53,7 +83,12 @@
       chrome.storage.local.get(STORAGE_KEY, (data) => {
         const cfg = data[STORAGE_KEY] || {};
         const overrides = cfg.overrides || {};
-        const hostOverride = overrides[location.hostname];
+        // Overrides are keyed by the console hostname (what the user sees in
+        // the browser). content.js may run on the OAuth/login page whose
+        // hostname differs (e.g. oauth-openshift.* vs console-openshift-console.*).
+        // Try the current hostname first, then its console-hostname equivalent.
+        const consoleEquiv = location.hostname.replace(/^oauth-openshift\./, 'console-openshift-console.');
+        const hostOverride = overrides[location.hostname] || overrides[consoleEquiv];
         resolve({
           username: (hostOverride ? hostOverride.username : cfg.username) || "",
           password: (hostOverride ? hostOverride.password : cfg.password) || "",
@@ -101,6 +136,7 @@
     if (pageActed) return;
     pageActed = true;
     log("clicking provider target:", describeEl(target));
+    bumpEvent("autologin.providerSelected");
     target.click();
   }
 
@@ -255,6 +291,7 @@
 
       // Use requestSubmit() so form validation / submit events fire normally.
       log("submitting form");
+      bumpEvent("autologin.executed");
       if (typeof form.requestSubmit === "function") form.requestSubmit();
       else form.submit();
     } else {
@@ -359,6 +396,7 @@
   }
 
   function sendLoginCommandFailed() {
+    silentLog("sendLoginCommandFailed", "url=" + location.href);
     try { chrome.runtime.sendMessage({ type: "loginCommandFailed" }); } catch (_) {}
   }
 
@@ -367,12 +405,22 @@
   function handleTokenRequest(config) {
     const silent = isSilentMode();
     log("[CopyLogin] handleTokenRequest — silent:", silent, "| autoCopyToken:", config.autoCopyToken, "| has creds:", !!(config.username && config.password));
+    silentLog("handleTokenRequest",
+      "silent=" + silent +
+      " | autoCopyToken=" + config.autoCopyToken +
+      " | hasCreds=" + !!(config.username && config.password) +
+      " | url=" + location.href
+    );
     // In silent mode (background tab opened by the console header "Copy Login"
     // button) we always proceed regardless of the autoCopyToken setting, and we
     // skip the visible progress banner since the tab is inactive.
     // Persist the flag so it survives OAuth redirects (e.g. to an LDAP login page).
     if (silent) markSilentMode();
-    if (!config.autoCopyToken && !silent) { log("[CopyLogin] autoCopyToken disabled and not silent — skipping"); return; }
+    if (!config.autoCopyToken && !silent) {
+      log("[CopyLogin] autoCopyToken disabled and not silent — skipping");
+      silentLog("handleTokenRequest.skip", "autoCopyToken disabled and not silent");
+      return;
+    }
     if (!silent) showProgressBanner("fetching login token, please wait…");
     tryClickDisplayToken(0);
   }
@@ -399,20 +447,44 @@
     if (target) {
       if (pageActed) return;
       pageActed = true;
-      log("[CopyLogin] clicking Display Token (attempt", attempt + 1, ") —",
-          target.tagName, target.getAttribute("type") || "(no type)",
-          `"${(target.textContent || target.value || "").trim().substring(0, 40)}"`);
+      const targetDesc =
+        target.tagName + '[type=' + (target.getAttribute("type") || "none") + '] "' +
+        (target.textContent || target.value || "").trim().substring(0, 40) + '"';
+      log("[CopyLogin] clicking Display Token (attempt", attempt + 1, ") —", targetDesc);
+      silentLog("tryClickDisplayToken.click", "attempt=" + (attempt + 1) + " | " + targetDesc);
       target.click();
       return;
     }
 
     // The page may render its button asynchronously — retry for up to 3 seconds.
     if (attempt < 15) {
-      if (attempt === 0) log("[CopyLogin] Display Token button not found yet — retrying up to 3 s…");
+      if (attempt === 0) {
+        log("[CopyLogin] Display Token button not found yet — retrying up to 3 s…");
+        // Full diagnostic snapshot on the very first miss so we can see exactly
+        // what the page looked like before any retries changed state.
+        const allForms = Array.from(document.querySelectorAll('form'))
+          .map((f) => 'FORM[action=' + (f.getAttribute('action') || '?') + ']')
+          .join(' | ');
+        const allBtns = Array.from(
+          document.querySelectorAll('button, input[type="submit"], a')
+        )
+          .map((el) =>
+            el.tagName + '[type=' + (el.getAttribute('type') || '?') + '] "' +
+            (el.textContent || el.value || '').trim().slice(0, 40) + '"'
+          )
+          .join(' | ');
+        silentLog("tryClickDisplayToken.miss0.url", location.href);
+        silentLog("tryClickDisplayToken.miss0.readyState", document.readyState);
+        silentLog("tryClickDisplayToken.miss0.forms", allForms || "(none)");
+        silentLog("tryClickDisplayToken.miss0.buttons", allBtns || "(none)");
+        silentLog("tryClickDisplayToken.miss0.body",
+          (document.body?.innerText || '').substring(0, 400));
+      }
       setTimeout(() => tryClickDisplayToken(attempt + 1), 200);
     } else {
-      log("[CopyLogin] Display Token button not found after retries — body preview:",
-          document.body?.innerText?.substring(0, 300));
+      const bodyPreview = document.body?.innerText?.substring(0, 300) || '';
+      log("[CopyLogin] Display Token button not found after retries — body preview:", bodyPreview);
+      silentLog("tryClickDisplayToken.gaveUp", bodyPreview);
       // In silent mode the background is holding a 20 s timeout; fail fast so
       // it can close the tab and show a helpful error immediately.
       if (isSilentMode()) sendLoginCommandFailed();
@@ -423,6 +495,7 @@
 
   async function handleTokenDisplay(config) {
     const silent = isSilentMode();
+    silentLog("handleTokenDisplay.entry", "silent=" + silent + " | url=" + location.href);
 
     // Always inject copy buttons on manual visits; skip in silent mode (the tab
     // is invisible and will be closed as soon as we extract the command).
@@ -494,9 +567,11 @@
       if (!displayBtnClicked) {
         const displayBtn = findDisplayTokenElement();
         if (displayBtn) {
-          log("[CopyLogin] display page: clicking element —",
-            displayBtn.tagName, 'type=' + (displayBtn.type || 'n/a'),
-            'text=' + (displayBtn.textContent || '').trim().substring(0, 40));
+          const btnDesc =
+            displayBtn.tagName + '[type=' + (displayBtn.type || 'n/a') + '] "' +
+            (displayBtn.textContent || '').trim().substring(0, 40) + '"';
+          log("[CopyLogin] display page: clicking element —", btnDesc);
+          silentLog("handleTokenDisplay.clickDisplayBtn", btnDesc);
           displayBtn.click();
           displayBtnClicked = true;
           // Give the page extra time to render the command after the click
@@ -509,6 +584,9 @@
             .join(' | ');
           log("[CopyLogin] display page: 'Display Token' button not found after 2s. Buttons on page:", allBtns || '(none)');
           log("[CopyLogin] body preview:", document.body?.innerText?.substring(0, 200));
+          silentLog("handleTokenDisplay.noDisplayBtn2s.buttons", allBtns || '(none)');
+          silentLog("handleTokenDisplay.noDisplayBtn2s.body",
+            document.body?.innerText?.substring(0, 400) || '');
         }
       }
 
@@ -516,7 +594,9 @@
     }
 
     if (!match) {
-      log("[CopyLogin] no oc login command found after retries — body preview:", document.body?.innerText?.substring(0, 300));
+      const bodyPreview = document.body?.innerText?.substring(0, 300) || '';
+      log("[CopyLogin] no oc login command found after retries — body preview:", bodyPreview);
+      silentLog("handleTokenDisplay.noCmd", bodyPreview);
       if (silent) sendLoginCommandFailed();
       return;
     }
@@ -524,14 +604,24 @@
     pageActed = true;
     const cmd = match[0].replace(/\s+/g, " ").trim();
     log("[CopyLogin] command extracted (first 60 chars):", cmd.substring(0, 60));
+    silentLog("handleTokenDisplay.cmdFound", cmd.substring(0, 80));
 
     // Silent mode: this tab was opened by the background to extract the command.
     // Send it back to the background (which copies it and closes this tab).
     // Clipboard writes are not available in inactive background tabs.
     if (silent) {
+      silentLog("handleTokenDisplay.sendingReady", cmd.substring(0, 80));
       log("[CopyLogin] sending loginCommandReady to background");
-      try { chrome.runtime.sendMessage({ type: "loginCommandReady", text: cmd }); } catch (err) {
+      try {
+        chrome.runtime.sendMessage({ type: "loginCommandReady", text: cmd }, (resp) => {
+          if (chrome.runtime.lastError) {
+            silentLog("handleTokenDisplay.sendReadyError",
+              String(chrome.runtime.lastError.message));
+          }
+        });
+      } catch (err) {
         log("[CopyLogin] loginCommandReady send failed:", err);
+        silentLog("handleTokenDisplay.sendReadyThrew", String(err));
       }
       return;
     }

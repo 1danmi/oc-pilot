@@ -3,7 +3,7 @@
 This is the canonical index of every automated test case in the suite.
 It is the authoritative source of truth for what is tested and where.
 
-**Maintenance rule** — before merging any change to `src/`, the matching
+**Maintenance rule** — before merging any change to `extension/`, the matching
 row(s) in this table MUST be updated and the corresponding spec file
 extended. CI runs `npm test`; if a row is missing or stale the change
 is rejected at review time.

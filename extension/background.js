@@ -14,11 +14,11 @@ const pendingLoginTabs = new Map(); // tabId → { username, ts }
 // {eventName: count} map. What's NEVER collected: cluster URLs, resource names,
 // the actual username, or IPs.
 //
-// `t.config` lives in the extension folder (src/) and is read at runtime
-// via fetch(chrome.runtime.getURL('t.config')). It is .gitignored and is
-// deleted from the staging directory by pack.ps1 before the CRX is zipped,
-// so it is never bundled. For unpacked installs (Load unpacked → src/) the
-// file is read directly each time the SW starts.
+// `t.config` lives in the extension/ folder and is read at runtime via
+// fetch(chrome.runtime.getURL('t.config')). It is .gitignored and is
+// deleted from the staging directory by scripts/build-crx.ps1 before the
+// CRX is zipped, so it is never bundled. For unpacked installs (Load
+// unpacked → extension/) the file is read directly each time the SW starts.
 // Per-install overrides via the Diagnostics section in tab-mode settings
 // (openshiftAutoLogin.telemetry.serverUrl / serverToken) take precedence
 // over t.config values.
@@ -54,7 +54,7 @@ _telemetryConfigPromise.then((cfg) => {
     console.log(
       TELEMETRY_LOG,
       "disabled — t.config not found in extension folder or missing url/token. " +
-      "Place t.config in the extension folder (src/) to enable, or configure " +
+      "Place t.config in the extension/ folder to enable, or configure " +
       "URL+token via the popup's tab-mode Diagnostics section."
     );
   }
@@ -117,49 +117,50 @@ async function hashUsername(username) {
 }
 
 /**
- * Stable per-machine fingerprint hash.
- * Uses only properties available in a service worker (no offscreen / no screen
- * API access). Deliberately excludes navigator.userAgent (changes with every
- * Chrome major update) and timezone (changes when the user travels), so the
- * value stays consistent across reinstalls on the same hardware.
+ * 64-char lowercase hex looks like the v0.27.0 deterministic-fingerprint format
+ * (SHA-256 over a few navigator properties). Those values collide across
+ * similar corporate laptops — a real install reported 5 unique machines for
+ * 7 unique users — so any value matching this shape must be regenerated.
  */
-async function _computeMachineFingerprint() {
-  const platform  = (navigator && navigator.platform) || "";
-  const cores     = (navigator && navigator.hardwareConcurrency) || 0;
-  const memory    = (navigator && navigator.deviceMemory) || 0;
-  const languages = ((navigator && navigator.languages) || [(navigator && navigator.language) || ""]).join(",");
-  const str = [platform, cores, memory, languages].join("|");
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-  const bytes = new Uint8Array(buf);
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i].toString(16);
-    hex += b.length === 1 ? "0" + b : b;
-  }
-  return hex;
+function _isLegacyFingerprintMachineId(v) {
+  return typeof v === "string" && /^[a-f0-9]{64}$/.test(v);
 }
 
 /**
- * Hybrid machine_id resolver. Prefers chrome.storage.sync (survives uninstall
- * on the same Chrome profile); falls back to a deterministic fingerprint hash
- * (so the same machine still gets the same value even with sync disabled).
+ * machine_id resolver. Random UUID per (Chrome profile, machine_id slot).
+ * Stored in chrome.storage.sync so it survives uninstall + reinstall on the
+ * same Chrome profile (the original goal). No fingerprinting — the previous
+ * implementation hashed navigator.platform / hardwareConcurrency / deviceMemory
+ * / languages, which deterministically produced the same value for any pair
+ * of identical machines and inflated user_count / machine_count in the
+ * dashboard. We accept that sync-off installs lose stability across reinstall
+ * (random UUID per install) because that's strictly better than silent
+ * collisions across distinct machines.
+ *
+ * Also auto-migrates: if the synced value looks like a legacy 64-char hex
+ * fingerprint, it is discarded and replaced with a fresh UUID.
  */
 async function _getOrCreateMachineId() {
+  let synced = null;
   try {
-    const synced = await new Promise((r) => {
-      try { chrome.storage.sync.get("ocPilotMachineId", (d) => r(d || {})); }
-      catch (_) { r({}); }
+    synced = await new Promise((r) => {
+      try { chrome.storage.sync.get("ocPilotMachineId", (d) => r((d || {}).ocPilotMachineId || null)); }
+      catch (_) { r(null); }
     });
-    if (synced && synced.ocPilotMachineId) return synced.ocPilotMachineId;
   } catch (_) {}
-  const fp = await _computeMachineFingerprint();
+
+  if (synced && !_isLegacyFingerprintMachineId(synced)) return synced;
+
+  // Either no synced value yet, or it was a legacy fingerprint hash — regenerate.
+  const id = (typeof crypto !== "undefined" && crypto.randomUUID && crypto.randomUUID()) ||
+             (Date.now() + "-" + Math.random().toString(36).slice(2));
   try {
     await new Promise((r) => {
-      try { chrome.storage.sync.set({ ocPilotMachineId: fp }, () => r()); }
+      try { chrome.storage.sync.set({ ocPilotMachineId: id }, () => r()); }
       catch (_) { r(); }
     });
   } catch (_) {}
-  return fp;
+  return id;
 }
 
 /** Promise wrapper around chrome.storage.local.{get,set}. */
@@ -198,17 +199,34 @@ async function sendTelemetry(opts) {
     const cfg = (data && data.openshiftAutoLogin) || {};
     const tel = cfg.telemetry || {};
 
-    // Two identifiers now: installId (per-install UUID, was previously stored
-    // as machineId) and machineId (stable per-machine, sync+fingerprint hybrid).
-    // Legacy installs only have tel.machineId — migrate on the fly: that value
-    // becomes the installId, and we compute a fresh machineId.
+    // Two identifiers: installId (per-install UUID, was previously stored as
+    // machineId) and machineId (stable per-machine random UUID kept in
+    // chrome.storage.sync). Migrations handled here:
+    //   - pre-0.26.6 installs only had tel.machineId (per-install UUID) and no
+    //     installId field; the old value becomes the installId.
+    //   - 0.27.0 installs have tel.machineId set to a 64-char hex fingerprint
+    //     hash that collides across similar hardware (different users on
+    //     identical corporate laptops resolved to the same machineId). Detect
+    //     the legacy format and replace with a fresh random UUID via
+    //     _getOrCreateMachineId(), which also re-keys chrome.storage.sync.
     let installId = tel.installId || tel.machineId;
     let machineId;
-    if (tel.installId && tel.machineId) {
-      // Both new fields already present — fast path.
+    const legacyFingerprint = _isLegacyFingerprintMachineId(tel.machineId);
+    if (tel.installId && tel.machineId && !legacyFingerprint) {
+      // Both new fields present and machineId is not the legacy hex hash.
       machineId = tel.machineId;
     } else {
       machineId = await _getOrCreateMachineId();
+      // Persist the migrated identifiers immediately so the next send (and
+      // the popup diagnostics) see the new value.
+      try {
+        await _storageSet({
+          openshiftAutoLogin: {
+            ...cfg,
+            telemetry: { ...tel, installId, machineId },
+          },
+        });
+      } catch (_) {}
     }
     if (!installId) {
       console.warn(TELEMETRY_LOG, "no installId — bailing");
@@ -685,7 +703,7 @@ async function _fetchOcLoginCommand(tokenRequestUrl, notifyTabId, consoleHostnam
 /**
  * Read username/password from chrome.storage.local["openshiftAutoLogin"],
  * preferring a per-host override if one exists. Mirrors the pattern from
- * src/content.js loadConfig() so users get the same credential resolution
+ * extension/content.js loadConfig() so users get the same credential resolution
  * everywhere in the extension.
  */
 async function _getStoredCredentials(consoleHost) {

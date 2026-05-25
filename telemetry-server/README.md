@@ -38,7 +38,7 @@ keys that matter:
 
 | Key | Meaning |
 |---|---|
-| `auth.telemetry_token` | Shared bearer token. Extensions present this on POST. Same value must be set as `DEFAULT_TELEMETRY_TOKEN` in `src/background.js`. |
+| `auth.telemetry_token` | Shared bearer token. Extensions present this on POST. Same value must be set as `DEFAULT_TELEMETRY_TOKEN` in `extension/background.js`. |
 | `auth.stats_username` / `auth.stats_password` | HTTP basic auth for `/v1/stats`, `/v1/stats/timeseries`, and `/` (dashboard). |
 | `mongodb.uri` | Full Mongo connection string. PyMongo's `AsyncMongoClient` understands replica sets, SRV, TLS, auth, etc. |
 | `mongodb.database` / `mongodb.collection` | Names. Default `oc_pilot_telemetry` / `events`. |
@@ -93,7 +93,7 @@ oc get route oc-pilot-telemetry -o jsonpath='{.spec.host}'
 ```
 
 The `Route` does TLS edge termination automatically. Point
-`DEFAULT_TELEMETRY_URL` in `src/background.js` at
+`DEFAULT_TELEMETRY_URL` in `extension/background.js` at
 `https://<route-host>/v1/telemetry`.
 
 ## Generating secrets

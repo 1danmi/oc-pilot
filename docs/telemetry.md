@@ -34,10 +34,10 @@ on update) to the telemetry server. The POST body contains:
 
 ```jsonc
 {
-  "machineId":        "sha256-hex",       // stable per-machine; survives uninstall/reinstall (since v0.27.0)
-  "installId":        "uuid-v4",          // per-install; rotates on every (re)install (since v0.27.0)
+  "machineId":        "uuid-v4",          // stable per-(Chrome profile, machine slot); survives uninstall/reinstall when Chrome sync is on
+  "installId":        "uuid-v4",          // per-install; rotates on every (re)install
   "userHash":         "sha256-hex",       // SHA-256("oc-pilot:" + username.toLowerCase()), or null
-  "version":          "0.27.0",           // from manifest.json
+  "version":          "0.27.1",           // from manifest.json
   "periodStart":      1700000000,         // unix seconds — start of the counting window
   "periodEnd":        1700003600,         // unix seconds — end of the counting window
   "counters":         { "click.podTerminal": 5, "click.favourites.add": 3 },
@@ -47,18 +47,22 @@ on update) to the telemetry server. The POST body contains:
 }
 ```
 
-**`machineId`** is a stable per-machine identifier. Resolution is hybrid:
+**`machineId`** is a random UUID generated once and stored in
+`chrome.storage.sync["ocPilotMachineId"]`. Chrome sync replicates that value
+across uninstall + reinstall on the same Chrome profile, so the value
+survives a reinstall on any user signed in to Chrome sync. If Chrome sync
+is disabled, the UUID is generated fresh per install (same caveat as
+`installId` for those users — uniqueness wins over reinstall-stability,
+because the previous deterministic-fingerprint approach silently collided
+across identical corporate hardware).
 
-1. Primary: `chrome.storage.sync["ocPilotMachineId"]`. The value persists
-   across uninstall + reinstall as long as the user is on the same Chrome
-   profile.
-2. Fallback (sync unavailable): a deterministic SHA-256 hash of stable
-   navigator properties (`platform`, `hardwareConcurrency`, `deviceMemory`,
-   `languages`). Same machine → same hash, even with sync disabled.
-
-`navigator.userAgent` and timezone are deliberately excluded from the
-fingerprint so the value doesn't churn on every Chrome major update or when
-the user travels. It is used to count distinct machines.
+> **History.** v0.27.0 used a deterministic SHA-256 of navigator properties
+> (`platform`, `hardwareConcurrency`, `deviceMemory`, `languages`). That
+> hash collided for users on identical corporate laptops (one real install
+> reported 7 unique users on only 5 unique machines because two pairs of
+> engineers were sharing a fingerprint). v0.27.1 replaces it with a random
+> UUID and auto-migrates any 64-char hex value found in storage on the
+> next telemetry send.
 
 **`installId`** is a UUIDv4 generated once on first install and stored in
 `chrome.storage.local`. It rotates on every reinstall (because local storage
@@ -92,13 +96,13 @@ names.
 ## 3. Architecture
 
 ```
-Chrome extension (src/)
+Chrome extension (extension/)
   └── background.js
         ├── chrome.alarms  → fires every N minutes (default 60)
         ├── bumpCounter()  → increments counters in chrome.storage.local
         └── sendTelemetry() → POST /v1/telemetry
 
-Telemetry server (server/)
+Telemetry server (telemetry-server/)
   ├── app.py (FastAPI + PyMongo AsyncClient)
   │     ├── POST /v1/telemetry  → insert doc → JSON log line
   │     ├── GET  /v1/stats      → $group aggregation
@@ -192,8 +196,8 @@ hourly POST. Names follow the `category.subject[.qualifier]` convention.
 ```js
 {
   _id:              ObjectId,
-  machine_id:       "sha256-hex",      // stable per-machine (v0.27.0+)
-  install_id:       "uuid-v4",         // per-install (v0.27.0+)
+  machine_id:       "uuid-v4",         // stable per-(Chrome profile, machine slot); v0.27.0 used a 64-char SHA-256 hex hash that v0.27.1 replaces with a random UUID + migrates legacy values
+  install_id:       "uuid-v4",         // per-install (v0.26.6+)
   user_hash:        "sha256-hex" | null,
   version:          "0.27.0",
   period_start:     1700000000,        // unix sec
@@ -504,7 +508,7 @@ curl -u admin:<stats_password> http://localhost:7070/v1/stats
 ### 8.3 Extension
 
 Before packing the CRX, set these three constants at the top of
-`src/background.js`:
+`extension/background.js`:
 
 ```js
 const DEFAULT_TELEMETRY_URL          = "http://<telemetry-vm-ip>:7070/v1/telemetry";
@@ -512,7 +516,7 @@ const DEFAULT_TELEMETRY_TOKEN        = "<same-token-as-config.yaml auth.telemetr
 const TELEMETRY_PERIOD_HOURS         = 1;   // how often to send (hours)
 ```
 
-Then bump the version in `src/manifest.json` and run `.\pack.ps1`.
+Then bump the version in `extension/manifest.json` and run `.\scripts\build-crx.ps1`.
 
 On first load, the extension fires `lifecycle.installed` and sends an
 immediate POST — you should see `unique_machines: 1` in `/v1/stats` within
@@ -537,7 +541,7 @@ required). It auto-refreshes every 30 seconds.
 ### Dashboard development (without rebuilding the container)
 
 ```bash
-cd server/dashboard
+cd telemetry-server/dashboard
 npm install       # one-time
 npm run dev       # Vite at http://localhost:5173, proxies /v1/* to localhost:8080
 ```
@@ -622,7 +626,7 @@ filebeat.inputs:
   - type: filestream
     id: oc-pilot-telemetry
     paths:
-      - /path/to/server/logs/events.log
+      - /path/to/telemetry-server/logs/events.log
     parsers:
       - ndjson:
           target: ""
@@ -667,7 +671,7 @@ docker compose exec mongo mongosh oc_pilot_telemetry -u ocpilot -p \
 1. Generate a new token (`openssl rand -hex 32`).
 2. Update `auth.telemetry_token` in `config.yaml`.
 3. Restart the server: `docker compose restart server`.
-4. Update `DEFAULT_TELEMETRY_TOKEN` in `src/background.js`, bump the version,
+4. Update `DEFAULT_TELEMETRY_TOKEN` in `extension/background.js`, bump the version,
    re-pack and redistribute the CRX.
 5. Until users update, their POSTs will 401 — visible as `auth_failed` log lines.
 
@@ -723,7 +727,7 @@ and restart.
 2. Open the extension settings tab, unlock Developer settings (5 clicks on
    the header icon), and click **Send telemetry now**.
 3. Check the status message — red means the POST failed. Confirm the URL and
-   token in `src/background.js` match the running server.
+   token in `extension/background.js` match the running server.
 
 ### Events not appearing after interaction
 

@@ -73,7 +73,7 @@ export default async function globalSetup(_config: FullConfig) {
     console.log('[auth.setup] Console did not require login (auto-authenticated).');
   }
 
-  const authStatePath = path.resolve(__dirname, '../../.auth-state.json');
+  const authStatePath = path.resolve(__dirname, '../.auth-state.json');
   await page.context().storageState({ path: authStatePath });
 
   await browser.close();

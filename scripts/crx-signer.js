@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// pack-crx.js — Build a CRX3 file from a signed ZIP.
+// crx-signer.js — Build a CRX3 file from a signed ZIP.
 //
-// Usage: node pack-crx.js <key.pem> <source.zip> <output.crx>
+// Usage: node crx-signer.js <key.pem> <source.zip> <output.crx>
+//
+// Invoked by scripts/build-crx.ps1 — not normally run standalone.
 //
 // Implements the CRX3 format (Chrome 73+) using only Node built-ins.
 // Spec: https://chromium.googlesource.com/chromium/src/+/main/components/crx_file/crx3.proto
@@ -41,7 +43,7 @@ function pbField(fieldNum, data) {
 
 const [,, pemPath, zipPath, outPath] = process.argv;
 if (!pemPath || !zipPath || !outPath) {
-  console.error('Usage: node pack-crx.js <key.pem> <source.zip> <output.crx>');
+  console.error('Usage: node crx-signer.js <key.pem> <source.zip> <output.crx>');
   process.exit(1);
 }
 
