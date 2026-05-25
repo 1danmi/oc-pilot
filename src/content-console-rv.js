@@ -100,6 +100,42 @@
     inst._ocPilotPosPropPatched = true;
   }
 
+  // ── SPA navigation bridge ───────────────────────────────────────────────
+  // The isolated-world routerNavigate(path) dispatches `oc-pilot:navigate`
+  // with `{ pathname }`. Here in the MAIN world we call window.history.pushState
+  // and fire a synthetic popstate so the console's React Router treats it as
+  // an SPA transition instead of a full page reload. Window events do NOT
+  // cross worlds, so the isolated-world side also calls onNavigate() itself
+  // after dispatching this event — see content-console.js routerNavigate().
+  document.addEventListener('oc-pilot:navigate', function (e) {
+    try {
+      var p = e && e.detail && e.detail.pathname;
+      if (!p || typeof p !== 'string' || !p.startsWith('/') ||
+          !window.history || !window.history.pushState) {
+        if (p) window.location.href = p;
+        return;
+      }
+      window.history.pushState(null, '', p);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+      // Reset scroll. React Router doesn't do this for us on a synthetic
+      // popstate, and the console has no global scroll-restore hook —
+      // without this the user lands mid-page on long list views. The
+      // console doesn't necessarily scroll the window — modern PatternFly
+      // layouts put `overflow: auto` on an inner page-main container, so
+      // we reset both window and the most common inner scroll containers.
+      try { window.scrollTo(0, 0); } catch (_) {}
+      try {
+        ['#content-scrollable', '.pf-v5-c-page__main', '.pf-c-page__main', '.co-m-page__body']
+          .forEach(function (sel) {
+            var el = document.querySelector(sel);
+            if (el && typeof el.scrollTop !== 'undefined') el.scrollTop = 0;
+          });
+      } catch (_) {}
+    } catch (_) {
+      try { window.location.href = (e && e.detail && e.detail.pathname) || '/'; } catch (__) {}
+    }
+  });
+
   // Listen for sync requests from the isolated-world content script.
   // The DOM is shared between worlds, so CustomEvents dispatched by the
   // isolated world are visible to listeners registered here.

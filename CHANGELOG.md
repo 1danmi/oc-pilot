@@ -1,5 +1,58 @@
 # OC Pilot — Changelog
 
+## [0.27.0] — 2026-05-22
+
+### New feature: SPA-style navigation for extension-injected anchors
+
+Clicks on the extension's injected buttons (Terminal / Logs / Events on pod
+rows, Owner link on pod detail, Route ↔ Deployment cross-links, the
+favourites pinned-section row anchors) and the imperative redirect that
+fires after a Force Delete now transition via React Router's pushState path
+instead of triggering a full document reload. The page no longer flickers,
+in-memory state (open dropdowns, side panels, scroll positions in other
+tables) is preserved, and the transition is visibly snappier.
+
+How it works:
+
+- `routerNavigate(path)` lives in `src/content-console.js` (isolated world).
+  It validates the path, short-circuits on duplicate same-URL navigations,
+  and dispatches an `oc-pilot:navigate` CustomEvent on `document`.
+- `src/content-console-rv.js` (MAIN world) listens for the event, calls
+  `window.history.pushState(null, '', path)`, fires a synthetic
+  `PopStateEvent('popstate')` so the console's React Router treats it as a
+  normal SPA transition, and resets scroll on both `window` and the most
+  common inner PatternFly page-main containers
+  (`#content-scrollable`, `.pf-v5-c-page__main`, `.pf-c-page__main`,
+  `.co-m-page__body`) to match the scroll-reset behavior of a real
+  navigation.
+- Window events don't cross the isolated ↔ MAIN world boundary, so the
+  isolated-world `routerNavigate` also calls `onNavigate()` itself to
+  re-run the extension's injectors for the destination route. Without
+  this, the old route's injected buttons would linger until the
+  MutationObserver caught up.
+- A single delegated capture-phase click handler intercepts any
+  extension-injected anchor marked with `data-oc-pilot-spa-link="1"`.
+  Modifier-key clicks (Cmd/Ctrl/Shift/Alt/middle/right) are deliberately
+  not hijacked so "open in new tab" continues to work natively.
+
+Toggle in Settings → Console features → All resource pages → SPA-style
+navigation. Default ON. Disable if a corner of the console misbehaves
+under SPA transitions and the old behavior is needed temporarily.
+
+**Related bug fix shipped with this release:** on a pod detail page where
+the owner-link button gets appended **inside** the title `<h1>`, clicking
+the button used to bubble up to the click-to-copy handler attached to
+the same `<h1>` — copying the pod's name and showing the "✓ copied"
+toast even though the user only wanted to navigate. Fixed in
+`tryInjectClickToCopy` by bailing out when the click originated on an
+`<a>`, `<button>`, or `[role="button"]` inside the title.
+
+New Playwright tests 48–51 cover the SPA navigation feature (no
+full reload, injector re-run, scroll reset, modifier-key bypass). Test
+52 covers the click-to-copy regression. All on the live 4.16 console.
+
+---
+
 ## [0.26.6] — 2026-05-22
 
 ### Telemetry: stable machineId + per-install installId

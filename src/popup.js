@@ -36,6 +36,7 @@ const defaults = {
     clickToCopy:  true,
     favourites:   true,
     persistSort:  true,
+    spaNavigation: true,
   },
 };
 
@@ -72,6 +73,7 @@ function load() {
       $("feat-clickToCopy").checked  = cfg.features.clickToCopy  !== false;
       $("feat-favourites").checked   = cfg.features.favourites   !== false;
       $("feat-persistSort").checked  = cfg.features.persistSort  !== false;
+      $("feat-spaNavigation").checked = cfg.features.spaNavigation !== false;
     }
     updateStatus(cfg);
     renderOverrides(cfg.overrides);
@@ -465,6 +467,7 @@ function saveFeatures(changedFlag) {
       clickToCopy:  $("feat-clickToCopy").checked,
       favourites:   $("feat-favourites").checked,
       persistSort:  $("feat-persistSort").checked,
+      spaNavigation: $("feat-spaNavigation").checked,
     };
     const cfg = { ...existing, features };
     chrome.storage.local.set({ [STORAGE_KEY]: cfg }, () => {
@@ -691,7 +694,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (IS_TAB) {
     ["feat-ownerLink", "feat-podTerminal", "feat-podLogs", "feat-podEvents", "feat-podImageTag", "feat-forceDelete",
      "feat-crossLinks", "feat-loginToast", "feat-copyLoginCmd",
-     "feat-clickToCopy", "feat-favourites", "feat-persistSort"].forEach((id) => {
+     "feat-clickToCopy", "feat-favourites", "feat-persistSort", "feat-spaNavigation"].forEach((id) => {
       const flagName = id.replace(/^feat-/, "");
       $(id).addEventListener("change", () => saveFeatures(flagName));
     });

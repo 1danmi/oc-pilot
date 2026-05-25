@@ -92,6 +92,7 @@ See `CLAUDE.md` at the repository root for run instructions.
 |---|---------|----------------|--------|-----------------|
 | 36 | copy resource name | flag ON, on `/deployments/downloads` | Click element with `data-oc-pilot-copy="1"` | `navigator.clipboard.readText()` returns `"downloads"` |
 | 37 | flag off — no copy handler | flag OFF, on detail page | Navigate to detail | Zero elements with `data-oc-pilot-copy="1"` |
+| 52 | owner-link click inside title doesn't copy (regression) | `clickToCopy` + `ownerLink` + `spaNavigation` ON; on a pod detail page with `#oc-pilot-owner-btn` injected inside the `<h1>`; clipboard pre-loaded with sentinel | Click `#oc-pilot-owner-btn` | URL navigates to the owning Deployment; clipboard still holds the sentinel (proves click-to-copy did NOT fire from the bubbled anchor click) |
 
 ## Force delete — `force-delete.spec.ts`
 
@@ -109,6 +110,15 @@ See `CLAUDE.md` at the repository root for run instructions.
 | 45 | save desc preference | same, after test 44 click | Click "Created" again | `aria-sort="descending"`; storage updated to `direction:"desc"` |
 | 46 | restore on refresh | `ocPilotSortPrefs` pre-seeded with Created desc | Hard-navigate to pods list | Created column has `aria-sort="descending"` within 3 s of load |
 | 47 | restore after SPA navigation | same pre-seed | Navigate away to deployments, then back to pods | Created column has `aria-sort="descending"` within 3 s of returning |
+
+## SPA-style navigation — `spa-navigation.spec.ts`
+
+| # | Feature | Starting state | Action | Expected result |
+|---|---------|----------------|--------|-----------------|
+| 48 | no full reload on injected anchor click | `spaNavigation` ON, on `openshift-console` pods list, marker set on `window` | Left-click the first injected `data-oc-pilot-spa-link` "Logs" anchor | URL becomes `…/pods/<name>/logs`; `window.__ocPilotSpaMarker === 'still-here'` (proves no document load) |
+| 49 | injectors re-run on SPA destination | same pods list with pod-action buttons present | Dispatch `oc-pilot:navigate` with `pathname: '/k8s/ns/openshift-network-diagnostics/pods'` | URL changes to that namespace's pods list; marker survives; `.oc-pilot-pod-actions` selectors present on destination within 20 s |
+| 50 | scroll resets after SPA navigation | `openshift-network-diagnostics` pods list (scrollable), `window.scrollY > 100` after a manual `scrollTo(0, 400)` | Dispatch `oc-pilot:navigate` to a different list | After URL change, `window.scrollY === 0` within 3 s |
+| 51 | modifier-click bypasses SPA interception | injected pod-action anchors present | Ctrl-click a "Terminal" anchor | A new tab opens at the terminal URL; original tab's URL is unchanged |
 
 ---
 

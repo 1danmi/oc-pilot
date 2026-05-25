@@ -742,6 +742,14 @@
             </div>
             <div class="switch"><input type="checkbox" id="feat-persistSort" /><span class="slider"></span></div>
           </label>
+
+          <label class="feat-toggle-row">
+            <div class="feat-toggle-info">
+              <div class="feat-toggle-name">SPA-style navigation</div>
+              <div class="feat-toggle-desc">Clicks on the extension's injected buttons transition via React Router instead of reloading the page — faster, no flicker, and in-memory state is preserved. Cmd/Ctrl/Shift-click still opens in a new tab.</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="feat-spaNavigation" /><span class="slider"></span></div>
+          </label>
         </div>
 
         <div class="feat-group">
@@ -908,6 +916,15 @@
         <div class="card-title">What's New</div>
 
         <div class="wn-list">
+
+          <div class="wn-entry">
+            <div class="wn-entry-header">
+              <span class="wn-version wn-version-new">v0.27</span>
+              <span class="wn-badge-new">New</span>
+              <span class="wn-name">SPA-style navigation</span>
+            </div>
+            <div class="wn-desc">Clicking the extension's Terminal / Logs / Events / Owner / cross-link buttons (or jumping to a starred resource from the pinned section) no longer triggers a full page reload — the console transitions instantly via React Router instead. Saves you the 1–2 second flash and keeps in-memory state (dropdowns, side panels, scroll positions in other tables) intact. Cmd/Ctrl/Shift-click still opens in a new tab as expected. Toggle in Settings → Console features.</div>
+          </div>
 
           <div class="wn-entry">
             <div class="wn-entry-header">

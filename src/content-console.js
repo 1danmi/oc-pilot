@@ -31,6 +31,7 @@
     clickToCopy:  true,   // click any resource title to copy its name
     favourites:   true,   // star resources to pin them at the top of list pages
     persistSort:  true,   // remember column sort selection across navigations
+    spaNavigation: true,  // pushState-based SPA transitions for injected anchors / imperative redirects
   };
 
   // ── Telemetry helper ───────────────────────────────────────────────────────
@@ -38,6 +39,43 @@
   // sleeping SW or chrome.runtime hiccup NEVER breaks a feature.
   function bumpEvent(name) {
     try { chrome.runtime.sendMessage({ type: "telemetry/bump", event: name }); } catch (_) {}
+  }
+
+  // ── SPA navigation helper ──────────────────────────────────────────────────
+  // Replaces full-page reloads (window.location.href = …) and the browser's
+  // default anchor navigation with a pushState + popstate transition so the
+  // console's React Router treats it as an in-app navigation.
+  //
+  // pushState + popstate must run in the MAIN world (React Router lives there).
+  // We bridge via a CustomEvent on `document` — content-console-rv.js listens.
+  // Window-events do NOT cross worlds, so the synthetic popstate fired in the
+  // MAIN world won't trigger our isolated-world popstate listener — we call
+  // onNavigate() ourselves so injectors re-evaluate for the destination route.
+  function routerNavigate(path) {
+    if (!path) return;
+    if (!FEATURES.spaNavigation || typeof path !== 'string' || !path.startsWith('/')) {
+      // Feature disabled or non-relative URL → fall back to a full navigation.
+      try { window.location.href = path; } catch (_) {}
+      return;
+    }
+    // Skip if we're already on the target path; otherwise the back-button
+    // becomes a no-op once (duplicate history entry).
+    if (location.pathname === path) return;
+
+    try {
+      document.dispatchEvent(new CustomEvent('oc-pilot:navigate', {
+        detail: { pathname: path },
+      }));
+    } catch (_) {
+      try { window.location.href = path; } catch (__) {}
+      return;
+    }
+
+    // Re-run our injectors for the new route (popstate dispatched in MAIN
+    // doesn't cross to the isolated world). onNavigate clears stale injected
+    // elements immediately and schedules polled re-injection for when React
+    // finishes rendering the destination.
+    try { onNavigate(); } catch (_) {}
   }
 
   function loadFeatures(callback) {
@@ -56,6 +94,7 @@
           clickToCopy:  f.clickToCopy  !== false,
           favourites:   f.favourites   !== false,
           persistSort:  f.persistSort  !== false,
+          spaNavigation: f.spaNavigation !== false,
           copyLoginTimeoutSec: (typeof f.copyLoginTimeoutSec === 'number' && f.copyLoginTimeoutSec > 0)
             ? f.copyLoginTimeoutSec : 45,
         };
@@ -85,6 +124,7 @@
           clickToCopy:  f.clickToCopy  !== false,
           favourites:   f.favourites   !== false,
           persistSort:  f.persistSort  !== false,
+          spaNavigation: f.spaNavigation !== false,
           copyLoginTimeoutSec: (typeof f.copyLoginTimeoutSec === 'number' && f.copyLoginTimeoutSec > 0)
             ? f.copyLoginTimeoutSec : 45,
         };
@@ -262,7 +302,7 @@
         `^/k8s/ns/${namespace.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}/pods/${podName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}(/|$)`
       ).test(location.pathname);
       if (onThisPodPage) {
-        setTimeout(() => { location.href = `/k8s/ns/${namespace}/pods`; }, 1200);
+        setTimeout(() => routerNavigate(`/k8s/ns/${namespace}/pods`), 1200);
       }
     } catch (err) {
       console.error(LOG, 'force delete failed:', err);
@@ -531,6 +571,7 @@
     const btn = document.createElement('a');
     btn.id = 'oc-pilot-owner-btn';
     btn.href = href;
+    btn.setAttribute('data-oc-pilot-spa-link', '1');
     btn.setAttribute('style', [
       'display:inline-flex',
       'align-items:center',
@@ -783,6 +824,7 @@
     if (id) btn.id = id;
     btn.className = 'oc-pilot-link-btn';
     btn.href = href;
+    btn.setAttribute('data-oc-pilot-spa-link', '1');
     if (tooltip) btn.title = tooltip;
     btn.setAttribute('style', [
       'display:inline-flex',
@@ -1313,6 +1355,15 @@
     });
 
     el.addEventListener('click', async (e) => {
+      // The injected owner-link button (and any other interactive child the
+      // extension or the console adds into the heading) sits *inside* the
+      // title element when findAnchor returned mode: 'append'. A click on
+      // such a child bubbles up to here — if we acted on it we'd copy the
+      // pod's name (this closure's `name`) right when the user wanted to
+      // navigate. Bail out for any anchor / button click within the title.
+      const target = e.target;
+      if (target && target.closest && target.closest('a, button, [role="button"]')) return;
+
       e.preventDefault();
       e.stopPropagation();
       bumpEvent('click.clickToCopy');
@@ -1621,6 +1672,7 @@
       if (!FEATURES[featureKey]) return;
       const a = document.createElement('a');
       a.href = podPath + path;
+      a.setAttribute('data-oc-pilot-spa-link', '1');
       a.textContent = label;
       a.title = label + ' — ' + podPath.split('/').pop();
       a.setAttribute('style', [
@@ -2411,6 +2463,7 @@
       const a = document.createElement('a');
       a.className = 'co-resource-item__resource-name';
       a.href = href;
+      a.setAttribute('data-oc-pilot-spa-link', '1');
       a.textContent = text;
       wrap.appendChild(a);
 
@@ -3486,6 +3539,26 @@
     history[fn] = function (...args) { orig(...args); onNavigate(); };
   });
   window.addEventListener('popstate', onNavigate);
+
+  // ── SPA-link click interception ────────────────────────────────────────────
+  // Delegated capture-phase handler: any extension-injected <a> marked with
+  // data-oc-pilot-spa-link gets routed through routerNavigate() so the
+  // console's React Router handles it as an SPA transition instead of
+  // letting the browser perform a full page load. Modifier-key / non-left
+  // clicks fall through so "open in new tab" / right-click context-menu
+  // semantics still work natively.
+  document.addEventListener('click', (e) => {
+    if (!FEATURES.spaNavigation) return;
+    if (e.defaultPrevented) return;
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const target = e.target;
+    const a = target && target.closest && target.closest('a[data-oc-pilot-spa-link]');
+    if (!a) return;
+    const href = a.getAttribute('href');
+    if (!href || !href.startsWith('/')) return;
+    e.preventDefault();
+    routerNavigate(href);
+  }, true);
 
   // MutationObserver: retries every injector as the console's React tree
   // (and any virtualized list) settles or scrolls. rAF-throttled so a burst
