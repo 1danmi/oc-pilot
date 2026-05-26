@@ -1,3 +1,15 @@
+// @ts-nocheck
+// ─────────────────────────────────────────────────────────────────────────────
+// This file is the un-refactored monolith from before the TS refactor began.
+// `@ts-nocheck` suppresses ALL type errors here so the build pipeline works
+// while we extract features one at a time. As each feature moves to its own
+// file under features/, it is rewritten in real TypeScript (strict). Once
+// every feature is extracted, this file becomes a one-line entry point and
+// the `@ts-nocheck` pragma comes off.
+//
+// DO NOT add new code to this file. Add it to a feature module instead.
+// See docs/REFACTOR-CONTENT-CONSOLE.md for the extraction plan.
+// ─────────────────────────────────────────────────────────────────────────────
 (() => {
   'use strict';
 

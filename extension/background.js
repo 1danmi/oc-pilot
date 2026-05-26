@@ -895,7 +895,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // would skip injection because the old per-tab Set entry blocked it.
   chrome.scripting.executeScript({
     target: { tabId },
-    files: ["content-console.js"],
+    files: ["dist/content-console.js"],
   }).catch(() => {});
 });
 
