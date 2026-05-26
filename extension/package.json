@@ -1,0 +1,17 @@
+{
+  "name": "oc-pilot-extension",
+  "version": "0.27.1",
+  "private": true,
+  "description": "OC Pilot — Chrome MV3 extension source (compiled to bundled JS for Chrome runtime).",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "bundle":    "esbuild src/content-console/index.ts --bundle --format=iife --target=chrome117 --outfile=dist/content-console.js --sourcemap=external --log-level=info",
+    "build":     "npm run typecheck && npm run bundle",
+    "clean":     "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript":     "^5.6.0",
+    "esbuild":        "^0.25.0",
+    "@types/chrome":  "^0.0.280"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  // ── Output target ────────────────────────────────────────────────────────
+  // ES2024 syntax (e.g., `using` declarations). The Chrome 147+ floor easily
+  // covers this; the spec-minimum Chrome version for ES2024 syntax is 117.
+  // Bumping to ES2025 is one line if we ever want iterator helpers etc.
+  "compilerOptions": {
+    "target": "ES2024",
+
+    // Source uses ES module syntax (import/export). Bundler decides what to
+    // emit at the end (we emit IIFE because content scripts can't use ESM).
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+
+    // What APIs the compiler knows about. ES2024 unlocks Object.groupBy,
+    // Map.groupBy, Promise.withResolvers, Array.fromAsync, well-formed
+    // unicode string methods, and the RegExp v flag.
+    "lib": ["ES2024", "DOM"],
+
+    // Pulls in chrome.* type defs from @types/chrome. Without this everything
+    // chrome-related is `any`.
+    "types": ["chrome"],
+
+    // ── Strictness (2026 best-practice) ────────────────────────────────────
+    "strict":                              true,
+    "noUncheckedIndexedAccess":            true,
+    "exactOptionalPropertyTypes":          true,
+    "noPropertyAccessFromIndexSignature":  true,
+    "noImplicitOverride":                  true,
+    "noFallthroughCasesInSwitch":          true,
+
+    // ── Bundler-friendliness ───────────────────────────────────────────────
+    "isolatedModules":      true,
+    "verbatimModuleSyntax": true,
+    "esModuleInterop":      true,
+    "skipLibCheck":         true,
+
+    // tsc only typechecks; never produces files. esbuild does emission.
+    "noEmit": true,
+
+    // Source tree and (notional) output dir — outDir is unused because of
+    // noEmit, but TS still validates rootDir membership against it.
+    "rootDir": "src",
+    "outDir":  "dist",
+
+    // Sourcemap hints (mostly informational here; esbuild's
+    // --sourcemap=external is what actually emits the .map file).
+    "sourceMap":      true,
+    "inlineSources":  true
+  },
+  "include": ["src/content-console/**/*.ts"]
+}

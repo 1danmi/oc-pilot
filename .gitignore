@@ -7,6 +7,15 @@ playwright-report/
 tests/results/
 .playwright/
 
+# Exception: extension/node_modules/ IS committed so airgapped machines can
+# build the extension without internet access (typescript + esbuild + types).
+# See docs/ARCHITECTURE.md → Air-gap build. ~34 MB.
+!extension/node_modules/
+
+# Extension build outputs (esbuild writes bundles + sourcemaps here).
+extension/dist/
+extension/*.tsbuildinfo
+
 # Test secrets and saved auth state
 tests/.env
 tests/.auth-state.json
