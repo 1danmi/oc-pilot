@@ -7,6 +7,45 @@
 > because they describe the state of the repo at the time of each release.
 > No code was changed in the rename — only file/folder moves.
 
+## [0.27.2] — 2026-05-25
+
+### Telemetry: send raw username alongside the existing hash
+
+Internal-only enhancement so the telemetry server can later join against
+Active Directory (department, team, location, etc.) and produce richer
+dashboards than the salted hash allows. The extension is organisation-
+approved for this deployment and usernames are public org data within
+the network.
+
+**Wire format additions** (everything else unchanged):
+
+- `username` — raw OpenShift username, lowercased. `null` when the user
+  hasn't configured credentials in the popup. Sent **alongside** the
+  existing `userHash`; the hash is **not** removed (kept for continuity
+  with historical aggregations).
+- `passwords are still never sent`. The change is scoped strictly to the
+  username field. The "What is never collected" callout in
+  [`docs/telemetry.md`](./docs/telemetry.md#2-what-is-never-collected) is
+  updated accordingly.
+
+**Server changes:**
+
+- `telemetry-server/app.py` — `TelemetryEvent.username: str | None` added
+  (max 128 chars); inserted as `username` column on each MongoDB document;
+  logged in the `telemetry_received` structured log line.
+- No new indexes (we'll add one when the AD-enrichment dashboard is built).
+- No dashboard changes (will land in a follow-up release).
+
+Backwards-compatible:
+
+- Older extension versions that don't send the field continue to work —
+  the server stores `null` for them.
+- Existing MongoDB rows have no `username` column; new rows have either
+  the raw value or `null`. Queries that don't reference the field are
+  unaffected.
+
+---
+
 ## [0.27.1] — 2026-05-25
 
 ### Bug fix: telemetry `machineId` collided across similar hardware

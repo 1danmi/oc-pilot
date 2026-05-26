@@ -312,6 +312,14 @@ class TelemetryEvent(BaseModel):
     machineId: str = Field(min_length=1, max_length=64)   # stable per-machine (since v0.27.0)
     installId: str = Field(min_length=1, max_length=64)   # per-install (since v0.27.0)
     userHash: str | None = Field(default=None, max_length=128)
+    # Raw username — sent alongside userHash starting in v0.27.2. The hash is
+    # kept for legacy aggregations / continuity; the raw value enables joining
+    # against Active Directory (department, team, etc.) for richer dashboards.
+    # Optional because (a) older extension versions don't send it and (b) the
+    # extension sends null when the user hasn't configured credentials yet.
+    # This payload field is intentionally permitted in the org's internal-only
+    # deployment — usernames are public org data. Never accept passwords here.
+    username: str | None = Field(default=None, max_length=128)
     version: str = Field(min_length=1, max_length=32)
     periodStart: int = Field(ge=0)
     periodEnd: int = Field(ge=0)
@@ -366,6 +374,7 @@ async def post_telemetry(
         "machine_id": event.machineId,
         "install_id": event.installId,
         "user_hash": event.userHash,
+        "username": event.username,
         "version": event.version,
         "period_start": event.periodStart,
         "period_end": event.periodEnd,
@@ -398,6 +407,7 @@ async def post_telemetry(
         machine_id=event.machineId,
         install_id=event.installId,
         user_hash=event.userHash,
+        username=event.username,
         version=event.version,
         period_start=event.periodStart,
         period_end=event.periodEnd,

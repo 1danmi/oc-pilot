@@ -37,7 +37,8 @@ on update) to the telemetry server. The POST body contains:
   "machineId":        "uuid-v4",          // stable per-(Chrome profile, machine slot); survives uninstall/reinstall when Chrome sync is on
   "installId":        "uuid-v4",          // per-install; rotates on every (re)install
   "userHash":         "sha256-hex",       // SHA-256("oc-pilot:" + username.toLowerCase()), or null
-  "version":          "0.27.1",           // from manifest.json
+  "username":         "jdoe",             // raw username (lowercased), or null — internal-only deployment, see notes below
+  "version":          "0.27.2",           // from manifest.json
   "periodStart":      1700000000,         // unix seconds — start of the counting window
   "periodEnd":        1700003600,         // unix seconds — end of the counting window
   "counters":         { "click.podTerminal": 5, "click.favourites.add": 3 },
@@ -72,8 +73,21 @@ hardware.
 
 **`userHash`** is a one-way SHA-256 of `"oc-pilot:" + username.toLowerCase()`.
 The salt is fixed and intentional — the same user on two different machines
-produces the same hash, so the server can count distinct users without storing
-the username. The hash is one-way and no PII is transmitted.
+produces the same hash, so the server can aggregate by distinct user without
+needing the raw value. The hash is one-way. Kept for continuity with
+historical aggregations and for any future deployment where raw usernames
+are undesirable.
+
+**`username`** is the raw OpenShift username (lowercased), sent alongside
+`userHash` starting in **v0.27.2**. This is an internal-only feature: the
+field exists so the telemetry server can later join against the
+organisation's Active Directory (department, team, location, etc.) and
+produce richer dashboards. The extension is explicitly approved by the
+organisation for this deployment, and usernames are public organisational
+data within the network. The field is `null` when the user hasn't yet
+configured credentials in the popup. **Passwords are still never sent** —
+only the username is transmitted in cleartext; `hashUsername()`'s salted
+hash is computed and sent alongside.
 
 **`counters`** is a flat map of `{eventName: integer}` accumulated since the
 last successful send. See [Event catalog](#4-event-catalog) for all event
@@ -83,13 +97,18 @@ names.
 
 ## 2. What is never collected
 
-- Usernames in plaintext
-- Passwords or tokens
+- Passwords, OAuth tokens, or any other credential material
 - Cluster URLs, hostnames, or IP addresses
 - Namespace names, resource names, or any Kubernetes resource content
 - Browser history or cookies
 - The client's IP address (the server receives it but explicitly does **not**
   store it — the document has `client_ip: null`)
+
+> **Usernames are collected** in this internal deployment. See the
+> `username` field description in section 1 and the v0.27.2 changelog entry
+> for context. The deployment is intentional, organisation-approved, and
+> limited to the internal network. Plaintext usernames are sent **in
+> addition to** the salted hash, never as a replacement.
 
 ---
 
@@ -199,7 +218,8 @@ hourly POST. Names follow the `category.subject[.qualifier]` convention.
   machine_id:       "uuid-v4",         // stable per-(Chrome profile, machine slot); v0.27.0 used a 64-char SHA-256 hex hash that v0.27.1 replaces with a random UUID + migrates legacy values
   install_id:       "uuid-v4",         // per-install (v0.26.6+)
   user_hash:        "sha256-hex" | null,
-  version:          "0.27.0",
+  username:         "jdoe" | null,    // raw username (v0.27.2+); null on pre-v0.27.2 rows and when extension has no credentials configured
+  version:          "0.27.2",
   period_start:     1700000000,        // unix sec
   period_end:       1700003600,        // unix sec
   counters:         { "click.podTerminal": 5, ... },
@@ -586,10 +606,11 @@ file **and** stderr):
   "level":            "INFO",
   "logger":           "oc-pilot-telemetry",
   "event":            "telemetry_received",
-  "machine_id":       "sha256-hex",
+  "machine_id":       "uuid",
   "install_id":       "uuid",
   "user_hash":        "sha256-hex or null",
-  "version":          "0.27.0",
+  "username":         "jdoe or null",
+  "version":          "0.27.2",
   "period_start":     1700000000,
   "period_end":       1700003600,
   "period_seconds":   3600,

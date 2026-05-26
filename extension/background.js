@@ -239,6 +239,12 @@ async function sendTelemetry(opts) {
     const periodStart = tel.periodStart || tel.installSentAt || periodEnd;
 
     const userHash = await hashUsername(cfg.username);
+    // Internal-only deployment: the organisation has approved sending the raw
+    // username alongside the hash so the server can later join against Active
+    // Directory (department, team, etc.) for richer dashboards. Lowercased to
+    // match hashUsername()'s input. Null when the user hasn't configured
+    // credentials yet — same convention as userHash.
+    const username = cfg.username ? String(cfg.username).toLowerCase() : null;
 
     // Prefer per-install override; fall back to the runtime-loaded t.config.
     let url   = (tel.serverUrl   && String(tel.serverUrl).trim())   || null;
@@ -255,7 +261,8 @@ async function sendTelemetry(opts) {
     const body = {
       machineId,           // stable per-machine
       installId,           // per-install
-      userHash,
+      userHash,            // SHA-256("oc-pilot:" + username) — kept for legacy aggregations
+      username,            // raw username for AD enrichment (org-approved internal use)
       version: chrome.runtime.getManifest().version,
       periodStart,
       periodEnd,
